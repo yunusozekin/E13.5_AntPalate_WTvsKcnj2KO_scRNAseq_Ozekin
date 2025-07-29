@@ -1,0 +1,503 @@
+---
+title: "de_analysis_wt_ko"
+author: "Yunus Ozekin"
+date: "2025-03-04"
+output: html_document
+---
+
+
+```{css, echo = F}
+caption {
+      color: blue;
+      font-weight: bold;
+      font-size: 2.0em;
+    }
+```
+
+
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+library(Seurat)
+library(sctransform)
+library(ggplot2)
+library(dplyr)
+library(ggsci)
+library(cowplot)
+library(patchwork)
+library(RColorBrewer)
+library(tidyverse)
+library(forcats)
+library(tidyr)
+library(ComplexHeatmap)
+options(future.globals.maxSize = 4000 * 1024^2)
+mem.maxVSize(vsize = 32000000000)
+```
+
+```{r}
+mypal <- c("#68023F","#008169","#EF0096","#00DCB5","#FFCFE2",
+           "#003C86","#9400E6","#009FFA","#FF71FD","#7CFFFA",
+           "#6A0213","#008607","#F60239","#00E307","#FFDC3D","#ffea8a","#001310","#ffe9f1")
+
+#mypal2 <- c("#5A5156", "#E4E1E3", "#F6222E", "#FE00FA", "#16FF32", "#3283FE", "#FEAF16", "#B00068", "#1CFFCE", "#90AD1C", "#2ED9FF", "#DEA0FD", "#AA0DFE", "#F8A19F", "#325A9B", "#C4451C", "#1C8356", "#85660D", "#B10DA1", "#FBE426", "#1CBE4F", "#FA0087", "#FC1CBF", "#F7E1A0", "#C075A6", "#782AB6", "#AAF400", "#BDCDFF", "#822E1C", "#B5EFB5", "#7ED7D1", "#1C7F93", "#D85FF7", "#683B79", "#66B0FF", "#3B00FB")
+
+```
+
+# Read Data
+
+```{r, echo=FALSE}
+int.seurat <- readRDS(file = "RDSfiles/All.integrated.clustered.RDS")
+all.markers <- readRDS(file = "RDSfiles/All.markers.int5.RDS")
+```
+
+# Remove XY genes
+```{r}
+library(biomaRt)
+
+# Connect to Ensembl database
+mart <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+# Get genes on chromosomes X and Y
+xy_genes <- getBM(attributes = c("external_gene_name", "chromosome_name"), 
+                   filters = "chromosome_name", 
+                   values = c("X", "Y"), 
+                   mart = mart)$external_gene_name
+
+int.seurat <- subset(int.seurat, features = setdiff(rownames(int.seurat), xy_genes))
+
+any(rownames(int.seurat) %in% xy_genes)  # Should return FALSE
+
+```
+
+# Remove RPL and RPS genes and Kcnj2
+```{r}
+library(biomaRt)
+
+# Connect to Ensembl database
+mart <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+# Get rRNA genes
+rRNA_genes <- getBM(
+  attributes = c("external_gene_name"),
+  filters = "biotype",
+  values = "rRNA",
+  mart = mart)$external_gene_name
+
+int.seurat <- subset(int.seurat, features = setdiff(rownames(int.seurat), rRNA_genes))
+
+# Get Rpl and Rps genes
+rp_genes <- grep("^Rps|^Rpl", rownames(int.seurat), value = TRUE)
+int.seurat <- subset(int.seurat, features = setdiff(rownames(int.seurat), rp_genes))
+
+any(rownames(int.seurat) %in% rRNA_genes)  # Should return FALSE
+any(rownames(int.seurat) %in% rp_genes)  # Should return FALSE
+
+
+int.seurat <- subset(int.seurat, features = setdiff(rownames(int.seurat), "Kcnj2"))
+```
+
+```{r}
+library(biomaRt)
+
+# Connect to Ensembl database
+mart <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+# Get Gm genes
+gm_genes <- grep("^Gm", rownames(int.seurat), value = TRUE)
+int.seurat <- subset(int.seurat, features = setdiff(rownames(int.seurat), gm_genes))
+
+any(rownames(int.seurat) %in% gm_genes)  # Should return FALSE
+```
+
+# Remove MT genes
+```{r}
+library(biomaRt)
+
+# Connect to Ensembl database
+mart <- useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+# Get MT genes
+MT_genes <- getBM(attributes = c("external_gene_name", "chromosome_name"), 
+                   filters = "chromosome_name", 
+                   values = c("MT"), 
+                   mart = mart)$external_gene_name
+
+int.seurat <- subset(int.seurat, features = setdiff(rownames(int.seurat), MT_genes))
+
+any(rownames(int.seurat) %in% MT_genes)  # Should return FALSE
+
+```
+
+# Proportion of cells in each cluster across each sample
+```{r, echo=FALSE}
+
+DefaultAssay(int.seurat) <- "SCT"
+Idents(int.seurat) <- "orig.ident"
+#int.seurat <- subset(x = int.seurat, idents = 'HET', invert = TRUE)
+
+pt <- table(int.seurat$Clusters, int.seurat$KO_type)
+pt <- as.data.frame(pt)
+
+pt <- filter(pt, Var2 != "HET")
+
+pt$Total <- ifelse(grepl("KO", pt$Var2), 11658, 22238)
+pt$Percentage <- ((pt$Freq)/(pt$Total))*100
+
+
+KO_type <- c("WT", "KO")
+
+#png(filename = "WT_KO_Proportions.png", width = 5, height = 5, units = "in", res = 300)
+ggplot(pt, aes(x = fct_relevel(Var2, "WT"), y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  theme(legend.title = element_blank()) + 
+  scale_fill_manual(values = mypal)
+#dev.off()
+
+pt_table <- subset (pt, select = -c(Var2, Freq, Total)) %>% 
+  pivot_wider(names_from = Var1, values_from = Percentage)
+pt_table
+
+```
+# Remove Het from analysis
+```{r}
+unique(Idents(int.seurat))
+int.seurat <- subset(x = int.seurat, idents = c("Kir2KO_3"), invert = TRUE)
+unique(Idents(int.seurat))
+```
+
+
+```{r}
+DefaultAssay(int.seurat) <- "SCT"
+Idents(int.seurat) <- "Clusters"
+int.seurat$celltype.ko <- paste(Idents(object = int.seurat), int.seurat$KO_type, sep = '.') 
+Idents(int.seurat) <- "celltype.ko"
+levels(int.seurat) <- c("Mes_1.KO", "Mes_1.WT", "Mes_2.KO", "Mes_2.WT", "Mes_3.KO", "Mes_3.WT", "Mes_4.KO", "Mes_4.WT", "Prolif_1.KO", "Prolif_1.WT", "Prolif_2.KO",  "Prolif_2.WT", "Prolif_3.KO", "Prolif_3.WT", "Ep_1.KO", "Ep_1.WT", "Ep_2.KO", "Ep_2.WT", "Imm.KO", "Imm.WT", "Schw.KO", "Schw.WT", "End.KO", "End.WT")
+
+```
+
+# UMAP by Cluster, KO_type, and DefiningName
+```{r, echo=FALSE}
+png(filename = "DimPlot_Clusters_WT_KO.png", width = 7.5, height = 5, units = "in", res = 300)
+DimPlot(int.seurat, group.by = "Clusters", cols = mypal, label = T, repel = T)
+dev.off()
+png(filename = "DimPlot_WT_KO.png", width = 7.5, height = 5, units = "in", res = 300)
+DimPlot(int.seurat, group.by = "KO_type", label = T, repel = T) + scale_color_igv()
+dev.off()
+```
+```{r, fig.width=12}
+#p1 <- DimPlot(int.seurat, group.by = "Clusters", cols = mypal, label = T, repel = T)
+#p2 <-FeaturePlot(int.seurat, features = c("Osr2", "Runx2", "Msx1", "Epha3", "Kcnj2"))
+#Idents(int.seurat) <- "Clusters"
+#png(filename = "int_marker_dot.png", width = 12, height = 8, units = "in", res = 300)
+#p1 + p2
+#DotPlot(int.seurat, features = c("Osr2", "Shox2", "Runx2", "Msx1", "Ogn", "Mecom", "Epha3", "Egfl6", "Igfbp2", "Trp63", "Cldn7", "Krt18", "Kcnj2")) + RotatedAxis()
+#dev.off()
+```
+# Mes1
+```{r, echo=FALSE, fig.width=9, fig.height=4}
+Mes1_de_exp <- FindMarkers(int.seurat, ident.1 = "Mes_1.WT", ident.2 = "Mes_1.KO", logfc.threshold = 0.5, verbose = FALSE)
+head(Mes1_de_exp, n = 30)
+
+DotPlot(int.seurat, idents = c("Mes_1.WT", "Mes_1.KO"), features = rownames(head(Mes1_de_exp, n = 30)), scale = F) + RotatedAxis() + labs(title = "Mes_1 DE Genes")
+```
+
+# Mes2
+```{r, echo=FALSE, fig.width=9, fig.height=4}
+Mes2_de_exp <- FindMarkers(int.seurat, ident.1 = "Mes_2.WT", ident.2 = "Mes_2.KO", logfc.threshold = 0.5, verbose = FALSE)
+head(Mes2_de_exp, n = 30)
+
+
+DotPlot(int.seurat, idents = c("Mes_2.WT", "Mes_2.KO"), features = rownames(head(Mes2_de_exp, n = 30)), scale = F) + RotatedAxis() + labs(title = "Mes_2 DE Genes")
+```
+
+# Mes3
+```{r, echo=FALSE, fig.width=9, fig.height=4}
+Mes3_de_exp <- FindMarkers(int.seurat, ident.1 = "Mes_3.WT", ident.2 = "Mes_3.KO", logfc.threshold = 0.5, verbose = FALSE)
+head(Mes3_de_exp, n = 30)
+
+
+DotPlot(int.seurat, idents = c("Mes_3.WT", "Mes_3.KO"), features = rownames(head(Mes3_de_exp, n = 30)), scale = F) + RotatedAxis() + labs(title = "Mes_3 DE Genes")
+```
+
+# Mes4
+```{r, echo=FALSE, fig.width=9, fig.height=4}
+Mes4_de_exp <- FindMarkers(int.seurat, ident.1 = "Mes_4.WT", ident.2 = "Mes_4.KO", logfc.threshold = 0.5, verbose = FALSE)
+head(Mes4_de_exp, n = 30)
+
+
+DotPlot(int.seurat, idents = c("Mes_4.WT", "Mes_4.KO"), features = rownames(head(Mes4_de_exp, n = 30)), scale = F) + RotatedAxis() + labs(title = "Mes_4 DE Genes")
+
+```
+
+# Ectoderm 1
+```{r, echo=FALSE, fig.width=9, fig.height=4}
+Ep1_de_exp <- FindMarkers(int.seurat, ident.1 = "Ep_1.WT", ident.2 = "Ep_1.KO", logfc.threshold = 0.5, verbose = FALSE)
+head(Ep1_de_exp, n = 30)
+
+DotPlot(int.seurat, idents = c("Ep_1.WT", "Ep_1.KO"), features = rownames(head(Ep1_de_exp, n = 30)), scale = F) + RotatedAxis() + labs(title = "Ep_1 DE Genes")
+```
+
+# Ectoderm 2
+```{r, echo=FALSE, fig.width=9, fig.height=4}
+Ep2_de_exp <- FindMarkers(int.seurat, ident.1 = "Ep_2.WT", ident.2 = "Ep_2.KO", logfc.threshold = 0.5, verbose = FALSE)
+head(Ep2_de_exp, n = 30)
+
+DotPlot(int.seurat, idents = c("Ep_2.WT", "Ep_2.KO"), features = rownames(head(Ep2_de_exp, n = 30)), scale = F) + RotatedAxis() + labs(title = "Ep_2 DE Genes")
+```
+
+# Proliferating 1
+```{r, echo=FALSE, fig.width=9, fig.height=4}
+Prolif1_de_exp <- FindMarkers(int.seurat, ident.1 = "Prolif_1.WT", ident.2 = "Prolif_1.KO", logfc.threshold = 0.5, verbose = FALSE)
+head(Prolif1_de_exp, n = 30)
+
+
+DotPlot(int.seurat, idents = c("Prolif_1.WT", "Prolif_1.KO"), features = rownames(head(Prolif1_de_exp, n = 30)), scale = F) + RotatedAxis() + labs(title = "Prolif_1 DE Genes")
+```
+
+# Proliferating 2
+```{r, echo=FALSE, fig.width=9, fig.height=4}
+Prolif2_de_exp <- FindMarkers(int.seurat, ident.1 = "Prolif_2.WT", ident.2 = "Prolif_2.KO", logfc.threshold = 0.5, verbose = FALSE)
+head(Prolif2_de_exp, n = 30)
+
+DotPlot(int.seurat, idents = c("Prolif_2.WT", "Prolif_2.KO"), features = rownames(head(Prolif2_de_exp, n = 30)), scale = F) + RotatedAxis() + labs(title = "Prolif_2 DE Genes")
+```
+
+# Proliferating 3
+```{r, echo=FALSE, fig.width=9, fig.height=4}
+Prolif3_de_exp <- FindMarkers(int.seurat, ident.1 = "Prolif_3.WT", ident.2 = "Prolif_3.KO", logfc.threshold = 0.5, verbose = FALSE)
+head(Prolif3_de_exp, n = 30)
+
+DotPlot(int.seurat, idents = c("Prolif_3.WT", "Prolif_3.KO"), features = rownames(head(Prolif3_de_exp, n = 30)), scale = F) + RotatedAxis() + labs(title = "Prolif_3 DE Genes")
+```
+```{r}
+write.csv(Ep1_de_exp,"MarkerGenes/Ep1.csv", row.names = TRUE)
+write.csv(Ep2_de_exp,"MarkerGenes/Ep2.csv", row.names = TRUE)
+write.csv(Mes1_de_exp,"MarkerGenes/Mes1.csv", row.names = TRUE)
+write.csv(Mes2_de_exp,"MarkerGenes/Mes2.csv", row.names = TRUE)
+write.csv(Mes3_de_exp,"MarkerGenes/Mes3.csv", row.names = TRUE)
+write.csv(Mes4_de_exp,"MarkerGenes/Mes4.csv", row.names = TRUE)
+write.csv(Prolif1_de_exp,"MarkerGenes/Prolif1.csv", row.names = TRUE)
+write.csv(Prolif2_de_exp,"MarkerGenes/Prolif2.csv", row.names = TRUE)
+write.csv(Prolif3_de_exp,"MarkerGenes/Prolif3.csv", row.names = TRUE)
+
+```
+
+
+```{r}
+library(dplyr)
+library(gt)
+
+# Prepare data
+top_genes <- Mes4_de_exp %>%
+  tibble::rownames_to_column("gene") %>%
+  arrange(p_val_adj) %>%
+  select(gene, avg_log2FC, pct.1, pct.2, p_val_adj) %>%
+  head(30)
+
+# Create compact gt table
+gt_table <- gt(top_genes) %>%
+  fmt_number(columns = c(avg_log2FC, pct.1, pct.2), decimals = 3) %>%
+  cols_label(
+    gene = "Gene",
+    avg_log2FC = "log2FC",
+    pct.1 = "Pct WT",
+    pct.2 = "Pct KO",
+    p_val_adj = "Adj P-Value"
+  ) %>%
+  tab_style(
+    style = cell_text(weight = "bold"),
+    locations = list(
+      cells_column_labels(everything()),
+      cells_title(groups = "title")
+    )
+  ) %>%
+  tab_header(title = "Top 30 Significant Genes Mes_4") %>%
+  tab_options(
+    table.width = px(400),
+    column_labels.font.size = px(12),
+    table.font.size = px(12)
+  )
+
+# Save the table as a PNG
+gtsave(gt_table, "top_genes_table_Mes_4.png")
+```
+
+# Generate lists of genes of interest  
+
+```{r}
+#Bmp ligands
+bmp.ligands <- c("Bmp1", "Bmp2", "Bmp3", "Bmp4", "Bmp5", "Bmp6", "Bmp7", "Bmp8a", "Bmp8b", "Bmp11", "Bmp15", "Tgfb1", "Tgfb2", "Tgfb3")
+
+#Bmp receptors
+bmp.receptors <- c("Bmpr1a", "Bmpr1b", "Bmpr2", "Tgfbr1", "Tgfbr2", "Tgfbr3")
+
+#smads
+smads <- c("Smad1", "Smad2", "Smad3", "Smad4", "Smad5", "Smad6", "Smad7")
+
+#Bmp inhibitors
+bmp.inhibitors <- c("Bambi", "Chrd", "Grem1", "Dcn", "Fst", "Ltpb1", "Ltbp2", "Nog", "Tgfbi", "Tgfbrap1", "Thbs1", "Sostdc1")
+
+#Wnt ligands
+wnt.ligands <- c("Wnt1", "Wnt2", "Wnt2b", "Wnt3", "Wnt3a", "Wnt4", "Wnt5a", "Wnt5b", "Wnt6", "Wnt7a", "Wnt7b", "Wnt8a", "Wnt8b", "Wnt9a", "wnt9b", "Wnt10a", "Wnt10b", "Wnt11", "Wnt16b")
+
+#Wnt receptors
+wnt.receptors <- c("Frzd1", "Frzd2", "Frzd3", "Frzd4", "Frzd5", "Frzd6", "Frzd7", "Frzd8", "Frzd9", "Frzd10", "Lrp1", "Lrp5", "Lrp6", "Lrp3", "Lrp8", "Lrp10", "Lrp11", "Lrpap1", "Musk")
+
+#Wnt inhibitors
+wnt.inhibitors <- c("Dkk1", "Dkk2", "Dkk3", "Sfrp1", "Sfrp2", "Sfrp5", "Wif1", "Wise", "Sostdc1", "Cerl1", "Igfb4", "Shisa", "Shisa3", "Shisa4", "Shisa5", "Rspo1", "Rspo2", "Rspo3", "Norrin")
+
+#hh ligands
+hh.ligands <- c("Shh", "Ihh", "Dhh")
+
+#hh receptors
+hh.receptors <- c("Smo", "Ptch1", "Ptch2")
+
+#Fgf ligands
+fgf.ligands <- c("Fgf1", "Fgf2", "Fgf3", "Fgf4", "Fgf5", "Fgf6", "Fgf7", "Fgf8", "Fgf9", "Fgf10", "Fgf18", "Fgf23")
+
+#Fgf receptors
+fgf.receptors <- c("Fgfr1", "Fgfr2", "Fgfr2b", "Fgfr3", "Fgfr4")
+
+#Igf ligands
+igf.ligands <- c("Igf1", "Igf2")
+
+#Igf receptors
+igf.receptors <- c("Igf1r", "Igflr1", "Insr")
+
+#Pdgf ligands
+pdgf.ligands <- c("Pdgfa", "Pdgfb", "Pdgfc", "Pdgfd")
+
+#Pdgf receptors
+pdgf.receptors <- c("Pdgfra", "Pdgfrb", "Pdgfrl")
+
+#Egf ligands
+egf.ligands <- c("Egf", "Tgfa", "Hbegf","Btc", "Areg", "Ereg", "Epgn")
+
+#Egf receptors
+egf.receptors <- c("Egfr", "Erbb1", "Her1")
+
+#Notch ligands
+notch.ligands <- c("Jag1", "Jag2", "Dll1", "Dll3", "Dll4")
+
+#Notch receptors
+notch.receptors <- c("Notch1", "Notch2", "Notch3", "Notch4")
+
+#Notch regulators
+notch.regulators <- c("Lfng", "Mfng", "Rfng")
+
+#Notch targets
+notch.targets <- c("Hes1", "Hes2", "Hes3", "Hes4", "Hes5", "Hes6", "Hes7", "Hey1", "Hey2", "Heyl")
+
+#Endothelin ligands
+Edn.ligands <- c("Edn1", "Edn2", "Edn3")
+
+#Endothelin receptors
+Edn.receptors <- c("Ednra", "Ednrb")
+
+#Endothelin regulators
+Edn.regulators <- c("Ece1", "Ecel1", "Ece2")
+
+int.seurat.subset <- subset(int.seurat, idents = c("Mes_1.KO", "Mes_1.WT", "Mes_2.KO", "Mes_2.WT", "Mes_3.KO", "Mes_3.WT", "Mes_4.KO", "Mes_4.WT"))
+
+
+```
+
+# BMP ligands, receptors, smads, and inhibitors
+```{r, echo=FALSE, warning=FALSE}
+DefaultAssay(int.seurat.subset) = "SCT"
+
+#png(filename = "BMP_Genes.png", width = 8.5, height = 5, units = "in", res = 300)
+DotPlot(int.seurat.subset, features = c(bmp.ligands, bmp.receptors, smads)) + RotatedAxis() + ggtitle(label = "Bmp") + theme(axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), axis.title = element_blank())
+#dev.off()
+```
+
+# Notch ligands, receptors, regulators, and targets
+```{r, echo=FALSE, warning=FALSE}
+#png(filename = "Notch_Genes.png", width = 8, height = 5, units = "in", res = 300)
+DotPlot(int.seurat.subset, features = c(notch.ligands, notch.receptors)) + RotatedAxis() + ggtitle(label = "Notch") + theme(axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), axis.title = element_blank())
+#dev.off()
+```
+
+# Wnt ligands, receptors, and inhbitors
+```{r, echo=FALSE, warning=FALSE}
+#png(filename = "Wnt_Genes.png", width = 8, height = 5, units = "in", res = 300)
+DotPlot(int.seurat.subset, features = c(wnt.ligands, wnt.receptors)) + RotatedAxis() + ggtitle(label = "Wnt")  + theme(axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), axis.title = element_blank())
+#dev.off()
+```
+
+# Hh ligands and receptors
+No changes to hh ligands or receptors  
+```{r, echo=FALSE, warning=FALSE}
+#png(filename = "Hh_Genes.png", width = 8, height = 5, units = "in", res = 300)
+DotPlot(int.seurat.subset, features = c(hh.ligands, hh.receptors)) + RotatedAxis() + ggtitle(label = "Hh")  + theme(axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), axis.title = element_blank())
+#dev.off()
+```
+
+# Fgf ligands and receptors
+```{r, echo=FALSE, warning=FALSE}
+#png(filename = "fgf_Genes.png", width = 8, height = 5, units = "in", res = 300)
+DotPlot(int.seurat.subset, features = c(fgf.ligands, fgf.receptors)) + RotatedAxis() + ggtitle(label = "Fgf")  + theme(axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), axis.title = element_blank())
+#dev.off()
+```
+
+# Igf ligands and receptors
+```{r, echo=FALSE, warning=FALSE}
+#png(filename = "igf_Genes.png", width = 8, height = 5, units = "in", res = 300)
+DotPlot(int.seurat.subset, features = c(igf.ligands, igf.receptors)) + RotatedAxis() + ggtitle(label = "Igf")  + theme(axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), axis.title = element_blank())
+#dev.off()
+```
+
+# Egf ligands and receptors
+```{r, echo=FALSE, warning=FALSE}
+#png(filename = "egf_Genes.png", width = 8, height = 5, units = "in", res = 300)
+DotPlot(int.seurat.subset, features = c(egf.ligands, egf.receptors)) + RotatedAxis() + ggtitle(label = "Egf")  + theme(axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), axis.title = element_blank())
+#dev.off()
+```
+
+# Pdgf ligands and receptors
+```{r, echo=FALSE, warning=FALSE}
+#png(filename = "Pdgf_Genes.png", width = 8, height = 5, units = "in", res = 300)
+DotPlot(int.seurat.subset, features = c(pdgf.ligands, pdgf.receptors)) + RotatedAxis() + ggtitle(label = "Pdgf")  + theme(axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), axis.title = element_blank())
+#dev.off()
+```
+
+# Edn ligands and receptors
+```{r, echo=FALSE, warning=FALSE}
+#png(filename = "Edn_Genes.png", width = 8, height = 5, units = "in", res = 300)
+DotPlot(int.seurat.subset, features = c(Edn.ligands, Edn.receptors, Edn.regulators)) + RotatedAxis() + ggtitle(label = "Edn")  + theme(axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), axis.title = element_blank())
+#dev.off()
+```
+
+```{r}
+#png(filename = "Genes_for_Emily.png", width = 8, height = 5, units = "in", res = 300)
+#DotPlot(int.seurat.subset, features = c("Fos", "Egr1", "Fn1", "Jun", "Nr4a1")) + RotatedAxis() + theme(axis.text.x = element_text(size = 15), axis.text.y = element_text(size = 15), axis.title = element_blank())
+#dev.off()
+```
+
+```{r}
+int.seurat@meta.data$Clusters = factor(int.seurat@meta.data$Clusters, levels = c("Mes_1", "Mes_2", "Mes_3", "Mes_4", "Prolif_1", "Prolif_2", "Prolif_3", "Ep_1", "Ep_2", "End", "Imm", "Schw"))
+int.seurat@meta.data$KO_type = factor(int.seurat@meta.data$KO_type, levels = c("WT", "KO"))
+
+#png(filename = "BMP_pathway_genes.png", width = 7, height = 7, units = "in", res = 300)
+VlnPlot(
+  object = int.seurat,
+  features = c("Smad1", "Shox2", "Barx1", "Msx1", "Wnt5a", "Satb2", "Fgf10", "Runx1", "Runx2", "Runx3", "Shh"),
+  group.by = "Clusters",
+  split.by = "KO_type",
+  pt.size = 0,
+  stack = TRUE,
+  flip = TRUE,
+  cols = c("Purple", "Green")
+) + 
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_text(face = "bold", angle = 0),
+    panel.grid.major = element_blank()
+  )
+#dev.off()
+```
+
+```{r}
+sessionInfo()
+```
