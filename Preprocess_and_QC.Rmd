@@ -1,0 +1,408 @@
+---
+title: "KirKO and WT Preprocess and QC R Notebook"
+output: github_document
+---
+
+
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+library(Seurat)
+library(sctransform)
+library(ggplot2)
+library(dplyr)
+library(ggsci)
+library(cowplot)
+library(scater)
+library(patchwork)
+library(rmarkdown)
+options(future.globals.maxSize = 4000 * 1024^2)
+mem.maxVSize(vsize = 32000000000)
+```
+
+```{r, fig.height=5, fig.width=7  }
+GetQCplots <- function(seurat, mitoPattern){
+  seurat[["percent.mt"]] <- PercentageFeatureSet(seurat, pattern = mitoPattern)
+  v <- VlnPlot(seurat, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+  f1 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "percent.mt")
+  f2 <- FeatureScatter(seurat, feature1 = "nFeature_RNA", feature2 = "percent.mt")
+  f3 <- FeatureScatter(seurat, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+  
+  qc1 <- ggplot(seurat@meta.data, aes(x=nCount_RNA, y=nFeature_RNA, color=percent.mt)) + geom_point(size=0.1) +
+    scale_color_gradient(low="blue",high="red") + theme_classic()
+
+  qc2 <- ggplot(seurat@meta.data, aes(x=nCount_RNA, y=percent.mt)) + geom_point(size=0.1) + scale_x_log10() +
+    geom_density2d()
+
+  qc3 <- ggplot(seurat@meta.data, aes(x=nCount_RNA, y=nFeature_RNA ,color=percent.mt)) + geom_point(size=0.1) +
+    scale_x_log10() + scale_y_log10() + geom_density2d() +
+    scale_color_gradient(low="gray",high="darkblue") + theme_classic()
+
+  print(v)
+  print(f1)
+  print(f2)
+  print(f3)
+  print(qc1)
+  print(qc2)
+  print(qc3)
+
+  return(seurat)
+}
+```
+
+# Load data
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+Kir2KO_1_data <- Read10X(data.dir = "data/Kir2KO_1/")
+Kir2KO_1 <- CreateSeuratObject(Kir2KO_1_data, project = "Kir2KO_1")
+Kir2KO_2_data <- Read10X(data.dir = "data/Kir2KO_2/")
+Kir2KO_2 <- CreateSeuratObject(Kir2KO_2_data, project = "Kir2KO_2")
+Kir2HET_1_data <- Read10X(data.dir = "data/Kir2HET_1/")
+Kir2HET_1 <- CreateSeuratObject(Kir2HET_1_data, project = "Kir2HET_1")
+WT_1_data <- Read10X(data.dir = "data/WT_1/")
+WT_1 <- CreateSeuratObject(WT_1_data, project = "WT_1")
+WT_2_data <- Read10X(data.dir = "data/WT_2/")
+WT_2 <- CreateSeuratObject(WT_2_data, project = "WT_2")
+WT_3_data <- Read10X(data.dir = "data/WT_3/")
+WT_3 <- CreateSeuratObject(WT_3_data, project = "WT_3")
+```
+
+# QC plots
+
+## Kir2KO_1
+```{r, fig.height=5, fig.width=7  }
+Kir2KO_1 <- GetQCplots(Kir2KO_1, "^mt-")
+```
+
+## Kir2KO_2
+```{r, fig.height=5, fig.width=7  }
+Kir2KO_2 <- GetQCplots(Kir2KO_2, "^mt-")
+```
+
+## Kir2HET_1
+```{r, fig.height=5, fig.width=7  }
+Kir2HET_1 <- GetQCplots(Kir2HET_1, "^mt-")
+```
+
+## WT_1
+```{r, fig.height=5, fig.width=7  }
+WT_1 <- GetQCplots(WT_1, "^mt-")
+```
+
+## WT_2
+```{r, fig.height=5, fig.width=7  }
+WT_2 <- GetQCplots(WT_2, "^mt-")
+```
+
+## WT_3
+```{r, fig.height=5, fig.width=7  }
+WT_3 <- GetQCplots(WT_3, "^mt-")
+```
+
+# Outliers and subset
+
+## Kir2KO_1
+```{r}
+Kir2KO_1$nCount_RNA_drop <- isOutlier(Kir2KO_1$nCount_RNA, nmads = 3,
+                                  type = "both", log = TRUE)
+Kir2KO_1$nFeature_RNA_drop <- isOutlier(Kir2KO_1$nFeature_RNA, nmads = 3,
+                                    type = "both", log = TRUE)
+Kir2KO_1$percent.mt_drop <- isOutlier(Kir2KO_1$percent.mt, nmads = 3,
+                                  type = "higher", log = TRUE)
+Kir2KO_1$outlier <- Kir2KO_1$nCount_RNA_drop | Kir2KO_1$nFeature_RNA_drop | Kir2KO_1$percent.mt_drop
+table(Kir2KO_1$outlier)
+table(Kir2KO_1$nCount_RNA_drop)
+table(Kir2KO_1$nFeature_RNA_drop)
+table(Kir2KO_1$percent.mt_drop)
+```
+```{r}
+ggplot(Kir2KO_1@meta.data, aes(x=nCount_RNA, y=nFeature_RNA ,color=outlier)) + geom_point(size=0.1) +
+    scale_x_log10() + scale_y_log10() + geom_density2d() + theme_classic()
+```
+```{r}
+Kir2KO_1 <- subset(Kir2KO_1,  subset = outlier == FALSE)
+Kir2KO_1
+```
+
+## Kir2KO_2
+```{r}
+Kir2KO_2$nCount_RNA_drop <- isOutlier(Kir2KO_2$nCount_RNA, nmads = 3,
+                                  type = "both", log = TRUE)
+Kir2KO_2$nFeature_RNA_drop <- isOutlier(Kir2KO_2$nFeature_RNA, nmads = 3,
+                                    type = "both", log = TRUE)
+Kir2KO_2$percent.mt_drop <- isOutlier(Kir2KO_2$percent.mt, nmads = 3,
+                                  type = "higher", log = TRUE)
+Kir2KO_2$outlier <- Kir2KO_2$nCount_RNA_drop | Kir2KO_2$nFeature_RNA_drop | Kir2KO_2$percent.mt_drop
+table(Kir2KO_2$outlier)
+table(Kir2KO_2$nCount_RNA_drop)
+table(Kir2KO_2$nFeature_RNA_drop)
+table(Kir2KO_2$percent.mt_drop)
+```
+```{r}
+ggplot(Kir2KO_2@meta.data, aes(x=nCount_RNA, y=nFeature_RNA ,color=outlier)) + geom_point(size=0.1) +
+    scale_x_log10() + scale_y_log10() + geom_density2d() + theme_classic()
+```
+```{r}
+Kir2KO_2 <- subset(Kir2KO_2,  subset = outlier == FALSE)
+Kir2KO_2
+```
+
+## Kir2HET_1
+```{r}
+Kir2HET_1$nCount_RNA_drop <- isOutlier(Kir2HET_1$nCount_RNA, nmads = 3,
+                                  type = "both", log = TRUE)
+Kir2HET_1$nFeature_RNA_drop <- isOutlier(Kir2HET_1$nFeature_RNA, nmads = 3,
+                                    type = "both", log = TRUE)
+Kir2HET_1$percent.mt_drop <- isOutlier(Kir2HET_1$percent.mt, nmads = 3,
+                                  type = "higher", log = TRUE)
+Kir2HET_1$outlier <- Kir2HET_1$nCount_RNA_drop | Kir2HET_1$nFeature_RNA_drop | Kir2HET_1$percent.mt_drop
+table(Kir2HET_1$outlier)
+table(Kir2HET_1$nCount_RNA_drop)
+table(Kir2HET_1$nFeature_RNA_drop)
+table(Kir2HET_1$percent.mt_drop)
+```
+
+```{r}
+ggplot(Kir2HET_1@meta.data, aes(x=nCount_RNA, y=nFeature_RNA ,color=outlier)) + geom_point(size=0.1) +
+    scale_x_log10() + scale_y_log10() + geom_density2d() + theme_classic()
+```
+
+```{r}
+Kir2HET_1 <- subset(Kir2HET_1,  subset = outlier == FALSE)
+Kir2HET_1
+```
+
+## WT_1
+```{r}
+WT_1$nCount_RNA_drop <- isOutlier(WT_1$nCount_RNA, nmads = 3,
+                                  type = "both", log = TRUE)
+WT_1$nFeature_RNA_drop <- isOutlier(WT_1$nFeature_RNA, nmads = 3,
+                                    type = "both", log = TRUE)
+WT_1$percent.mt_drop <- isOutlier(WT_1$percent.mt, nmads = 3,
+                                  type = "higher", log = TRUE)
+WT_1$outlier <- WT_1$nCount_RNA_drop | WT_1$nFeature_RNA_drop | WT_1$percent.mt_drop
+table(WT_1$outlier)
+table(WT_1$nCount_RNA_drop)
+table(WT_1$nFeature_RNA_drop)
+table(WT_1$percent.mt_drop)
+```
+
+```{r}
+ggplot(WT_1@meta.data, aes(x=nCount_RNA, y=nFeature_RNA ,color=outlier)) + geom_point(size=0.1) +
+    scale_x_log10() + scale_y_log10() + geom_density2d() + theme_classic()
+```
+```{r}
+WT_1 <- subset(WT_1,  subset = outlier == FALSE)
+WT_1
+```
+
+## WT_2
+```{r}
+WT_2$nCount_RNA_drop <- isOutlier(WT_2$nCount_RNA, nmads = 3,
+                                  type = "both", log = TRUE)
+WT_2$nFeature_RNA_drop <- isOutlier(WT_2$nFeature_RNA, nmads = 3,
+                                    type = "both", log = TRUE)
+WT_2$percent.mt_drop <- isOutlier(WT_2$percent.mt, nmads = 3,
+                                  type = "higher", log = TRUE)
+WT_2$outlier <- WT_2$nCount_RNA_drop | WT_2$nFeature_RNA_drop | WT_2$percent.mt_drop
+table(WT_2$outlier)
+table(WT_2$nCount_RNA_drop)
+table(WT_2$nFeature_RNA_drop)
+table(WT_2$percent.mt_drop)
+```
+
+```{r}
+ggplot(WT_2@meta.data, aes(x=nCount_RNA, y=nFeature_RNA ,color=outlier)) + geom_point(size=0.1) +
+    scale_x_log10() + scale_y_log10() + geom_density2d() + theme_classic()
+```
+```{r}
+WT_2 <- subset(WT_2,  subset = outlier == FALSE)
+WT_2
+```
+
+## WT_3
+```{r}
+WT_3$nCount_RNA_drop <- isOutlier(WT_3$nCount_RNA, nmads = 3,
+                                  type = "both", log = TRUE)
+WT_3$nFeature_RNA_drop <- isOutlier(WT_3$nFeature_RNA, nmads = 3,
+                                    type = "both", log = TRUE)
+WT_3$percent.mt_drop <- isOutlier(WT_3$percent.mt, nmads = 3,
+                                  type = "higher", log = TRUE)
+WT_3$outlier <- WT_3$nCount_RNA_drop | WT_3$nFeature_RNA_drop | WT_3$percent.mt_drop
+table(WT_3$outlier)
+table(WT_3$nCount_RNA_drop)
+table(WT_3$nFeature_RNA_drop)
+table(WT_3$percent.mt_drop)
+```
+
+```{r}
+ggplot(WT_3@meta.data, aes(x=nCount_RNA, y=nFeature_RNA ,color=outlier)) + geom_point(size=0.1) +
+    scale_x_log10() + scale_y_log10() + geom_density2d() + theme_classic()
+```
+```{r}
+WT_3 <- subset(WT_3,  subset = outlier == FALSE)
+WT_3
+```
+
+```{r}
+#saveRDS(Kir2KO_1, file = "RDSfiles/Kir2KO_1.RDS")
+#saveRDS(Kir2KO_2, file = "RDSfiles/Kir2KO_2.RDS")
+#saveRDS(Kir2HET_1, file = "RDSfiles/Kir2HET_1.RDS")
+#saveRDS(WT_1, file = "RDSfiles/WT_1.RDS")
+#saveRDS(WT_2, file = "RDSfiles/WT_2.RDS")
+#saveRDS(WT_3, file = "RDSfiles/WT_3.RDS")
+```
+
+# Normalization
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+Kir2KO_1 <- SCTransform(Kir2KO_1, method = "glmGamPoi", assay = 'RNA', new.assay.name = 'SCT', return.only.var.genes = FALSE)
+```
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+Kir2KO_2 <- SCTransform(Kir2KO_2, method = "glmGamPoi", assay = 'RNA', new.assay.name = 'SCT', return.only.var.genes = FALSE)
+```
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+Kir2HET_1 <- SCTransform(Kir2HET_1, method = "glmGamPoi", assay = 'RNA', new.assay.name = 'SCT', return.only.var.genes = FALSE)
+```
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+WT_1 <- SCTransform(WT_1, method = "glmGamPoi", assay = 'RNA', new.assay.name = 'SCT', return.only.var.genes = FALSE)
+```
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+WT_2 <- SCTransform(WT_2, method = "glmGamPoi", assay = 'RNA', new.assay.name = 'SCT', return.only.var.genes = FALSE)
+```
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+WT_3 <- SCTransform(WT_3, method = "glmGamPoi", assay = 'RNA', new.assay.name = 'SCT', return.only.var.genes = FALSE)
+```
+
+# Perform Dimensionality
+```{r}
+GetUMAPandClusters <- function(seurat){
+  DefaultAssay(seurat) <- "SCT"
+  seurat <- RunPCA(seurat, verbose = F, npcs = 50)
+  print(ElbowPlot(seurat, ndims = 50))
+  seurat <- RunUMAP(seurat, dims = 1:30, verbose = F)
+  seurat <- FindNeighbors(seurat, verbose = F, dims = 1:30)
+  seurat <- FindClusters(seurat, resolution = 0.3, verbose = F)
+  seurat <- FindClusters(seurat, resolution = 0.4, verbose = F)
+  seurat <- FindClusters(seurat, resolution = 0.5, verbose = F)
+  seurat <- FindClusters(seurat, resolution = 0.6, verbose = F)
+  seurat <- FindClusters(seurat, resolution = 0.7, verbose = F)
+  seurat <- FindClusters(seurat, resolution = 0.8, verbose = F)
+  seurat <- FindClusters(seurat, resolution = 0.9, verbose = F)
+  seurat <- FindClusters(seurat, resolution = 1.0, verbose = F)
+  
+  return(seurat)
+}
+```
+
+## Kir2KO_1
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE, fig.height=3, fig.width=3}
+Kir2KO_1 <- GetUMAPandClusters(Kir2KO_1)
+```
+
+```{r, fig.height=10, fig.width=10}
+p1 <- DimPlot(Kir2KO_1, label = T, repel = T, group.by = "SCT_snn_res.0.3") + scale_color_igv()
+p2 <- DimPlot(Kir2KO_1, label = T, repel = T, group.by = "SCT_snn_res.0.4") + scale_color_igv()
+p3 <- DimPlot(Kir2KO_1, label = T, repel = T, group.by = "SCT_snn_res.0.5") + scale_color_igv() 
+p4 <- DimPlot(Kir2KO_1, label = T, repel = T, group.by = "SCT_snn_res.0.6") + scale_color_igv()
+p5 <- DimPlot(Kir2KO_1, label = T, repel = T, group.by = "SCT_snn_res.0.7") + scale_color_igv()
+p6 <- DimPlot(Kir2KO_1, label = T, repel = T, group.by = "SCT_snn_res.0.8") + scale_color_igv()
+p7 <- DimPlot(Kir2KO_1, label = T, repel = T, group.by = "SCT_snn_res.0.9") + scale_color_igv()
+p8 <- DimPlot(Kir2KO_1, label = T, repel = T, group.by = "SCT_snn_res.1") + scale_color_igv()
+p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8
+```
+
+## Kir2KO_2
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE, fig.height=3, fig.width=3}
+Kir2KO_2 <- GetUMAPandClusters(Kir2KO_2)
+```
+
+```{r, fig.height=10, fig.width=10}
+p1 <- DimPlot(Kir2KO_2, label = T, repel = T, group.by = "SCT_snn_res.0.3") + scale_color_igv()
+p2 <- DimPlot(Kir2KO_2, label = T, repel = T, group.by = "SCT_snn_res.0.4") + scale_color_igv()
+p3 <- DimPlot(Kir2KO_2, label = T, repel = T, group.by = "SCT_snn_res.0.5") + scale_color_igv() 
+p4 <- DimPlot(Kir2KO_2, label = T, repel = T, group.by = "SCT_snn_res.0.6") + scale_color_igv()
+p5 <- DimPlot(Kir2KO_2, label = T, repel = T, group.by = "SCT_snn_res.0.7") + scale_color_igv()
+p6 <- DimPlot(Kir2KO_2, label = T, repel = T, group.by = "SCT_snn_res.0.8") + scale_color_igv()
+p7 <- DimPlot(Kir2KO_2, label = T, repel = T, group.by = "SCT_snn_res.0.9") + scale_color_igv()
+p8 <- DimPlot(Kir2KO_2, label = T, repel = T, group.by = "SCT_snn_res.1") + scale_color_igv()
+p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8
+```
+
+## Kir2HET_1
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE, fig.height=3, fig.width=3}
+Kir2HET_1 <- GetUMAPandClusters(Kir2HET_1)
+```
+
+```{r, fig.height=10, fig.width=10}
+p1 <- DimPlot(Kir2HET_1, label = T, repel = T, group.by = "SCT_snn_res.0.3") + scale_color_igv()
+p2 <- DimPlot(Kir2HET_1, label = T, repel = T, group.by = "SCT_snn_res.0.4") + scale_color_igv()
+p3 <- DimPlot(Kir2HET_1, label = T, repel = T, group.by = "SCT_snn_res.0.5") + scale_color_igv() 
+p4 <- DimPlot(Kir2HET_1, label = T, repel = T, group.by = "SCT_snn_res.0.6") + scale_color_igv()
+p5 <- DimPlot(Kir2HET_1, label = T, repel = T, group.by = "SCT_snn_res.0.7") + scale_color_igv()
+p6 <- DimPlot(Kir2HET_1, label = T, repel = T, group.by = "SCT_snn_res.0.8") + scale_color_igv()
+p7 <- DimPlot(Kir2HET_1, label = T, repel = T, group.by = "SCT_snn_res.0.9") + scale_color_igv()
+p8 <- DimPlot(Kir2HET_1, label = T, repel = T, group.by = "SCT_snn_res.1") + scale_color_igv()
+p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8
+```
+
+## WT_1
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE, fig.height=3, fig.width=3}
+WT_1 <- GetUMAPandClusters(WT_1)
+```
+
+```{r, fig.height=10, fig.width=10}
+p1 <- DimPlot(WT_1, label = T, repel = T, group.by = "SCT_snn_res.0.3") + scale_color_igv()
+p2 <- DimPlot(WT_1, label = T, repel = T, group.by = "SCT_snn_res.0.4") + scale_color_igv()
+p3 <- DimPlot(WT_1, label = T, repel = T, group.by = "SCT_snn_res.0.5") + scale_color_igv() 
+p4 <- DimPlot(WT_1, label = T, repel = T, group.by = "SCT_snn_res.0.6") + scale_color_igv()
+p5 <- DimPlot(WT_1, label = T, repel = T, group.by = "SCT_snn_res.0.7") + scale_color_igv()
+p6 <- DimPlot(WT_1, label = T, repel = T, group.by = "SCT_snn_res.0.8") + scale_color_igv()
+p7 <- DimPlot(WT_1, label = T, repel = T, group.by = "SCT_snn_res.0.9") + scale_color_igv()
+p8 <- DimPlot(WT_1, label = T, repel = T, group.by = "SCT_snn_res.1") + scale_color_igv()
+p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8
+```
+
+## WT_2
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE, fig.height=3, fig.width=3}
+WT_2 <- GetUMAPandClusters(WT_2)
+```
+
+```{r, fig.height=10, fig.width=10}
+p1 <- DimPlot(WT_2, label = T, repel = T, group.by = "SCT_snn_res.0.3") + scale_color_igv()
+p2 <- DimPlot(WT_2, label = T, repel = T, group.by = "SCT_snn_res.0.4") + scale_color_igv()
+p3 <- DimPlot(WT_2, label = T, repel = T, group.by = "SCT_snn_res.0.5") + scale_color_igv() 
+p4 <- DimPlot(WT_2, label = T, repel = T, group.by = "SCT_snn_res.0.6") + scale_color_igv()
+p5 <- DimPlot(WT_2, label = T, repel = T, group.by = "SCT_snn_res.0.7") + scale_color_igv()
+p6 <- DimPlot(WT_2, label = T, repel = T, group.by = "SCT_snn_res.0.8") + scale_color_igv()
+p7 <- DimPlot(WT_2, label = T, repel = T, group.by = "SCT_snn_res.0.9") + scale_color_igv()
+p8 <- DimPlot(WT_2, label = T, repel = T, group.by = "SCT_snn_res.1") + scale_color_igv()
+p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8
+```
+
+## WT_3
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE, fig.height=3, fig.width=3}
+WT_3 <- GetUMAPandClusters(WT_3)
+```
+
+```{r, fig.height=10, fig.width=10}
+p1 <- DimPlot(WT_3, label = T, repel = T, group.by = "SCT_snn_res.0.3") + scale_color_igv()
+p2 <- DimPlot(WT_3, label = T, repel = T, group.by = "SCT_snn_res.0.4") + scale_color_igv()
+p3 <- DimPlot(WT_3, label = T, repel = T, group.by = "SCT_snn_res.0.5") + scale_color_igv() 
+p4 <- DimPlot(WT_3, label = T, repel = T, group.by = "SCT_snn_res.0.6") + scale_color_igv()
+p5 <- DimPlot(WT_3, label = T, repel = T, group.by = "SCT_snn_res.0.7") + scale_color_igv()
+p6 <- DimPlot(WT_3, label = T, repel = T, group.by = "SCT_snn_res.0.8") + scale_color_igv()
+p7 <- DimPlot(WT_3, label = T, repel = T, group.by = "SCT_snn_res.0.9") + scale_color_igv()
+p8 <- DimPlot(WT_3, label = T, repel = T, group.by = "SCT_snn_res.1") + scale_color_igv()
+p1 + p2 + p3 + p4 + p5 + p6 + p7 + p8
+```
+
+```{r}
+#saveRDS(Kir2KO_1, file = "RDSfiles/Kir2KO_1.clustered.RDS")
+#saveRDS(Kir2KO_2, file = "RDSfiles/Kir2KO_2.clustered.RDS")
+#saveRDS(Kir2HET_1, file = "RDSfiles/Kir2HET_1.clustered.RDS")
+#saveRDS(WT_1, file = "RDSfiles/WT_1.clustered.RDS")
+#saveRDS(WT_2, file = "RDSfiles/WT_2.clustered.RDS")
+#saveRDS(WT_3, file = "RDSfiles/WT_3.clustered.RDS")
+```
+
+```{r}
+sessionInfo()
+```
+
