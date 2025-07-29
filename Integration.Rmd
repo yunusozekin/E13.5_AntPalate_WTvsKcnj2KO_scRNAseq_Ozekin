@@ -1,0 +1,149 @@
+---
+title: "Integration of Kir2KO_1,2,3 and WT_1,2,3 R Notebook"
+output: 
+  html_notebook:
+    toc: TRUE
+    toc_depth: 3
+    toc_float: TRUE
+---
+
+```{css, echo = F}
+caption {
+      color: blue;
+      font-weight: bold;
+      font-size: 2.0em;
+    }
+```
+
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+library(Seurat)
+library(sctransform)
+library(ggplot2)
+library(dplyr)
+library(ggsci)
+library(cowplot)
+library(scater)
+library(patchwork)
+options(future.globals.maxSize = 4000 * 1024^2)
+mem.maxVSize(vsize = 128000000000)
+```
+
+```{r}
+mypal <- pal_igv(palette = "default",alpha = 1)(30)
+```
+
+# Read Data
+
+```{r}
+Kir2KO_1 <- readRDS("RDSfiles/Kir2KO_1.clustered.RDS")
+Kir2KO_2 <- readRDS("RDSfiles/Kir2KO_2.clustered.RDS")
+Kir2HET_1 <- readRDS("RDSfiles/Kir2HET_1.clustered.RDS")
+WT_1 <- readRDS("RDSfiles/WT_1.clustered.RDS")
+WT_2 <- readRDS("RDSfiles/WT_2.clustered.RDS")
+WT_3 <- readRDS("RDSfiles/WT_3.clustered.RDS")
+```
+
+# UMAPs of each sample
+
+```{r, fig.height=7, fig.width=7}
+Idents(Kir2KO_1) <- "SCT_snn_res.0.3"
+Idents(Kir2KO_2) <- "SCT_snn_res.0.3"
+Idents(Kir2HET_1) <- "SCT_snn_res.0.3"
+Idents(WT_1) <- "SCT_snn_res.0.3"
+Idents(WT_2) <- "SCT_snn_res.0.3"
+Idents(WT_3) <- "SCT_snn_res.0.3"
+p1 <- DimPlot(Kir2KO_1, label = T, repel = T) + NoLegend() + ggtitle("Kir2KO_1")
+p2 <- DimPlot(Kir2KO_2, label = T, repel = T) + NoLegend() + ggtitle("Kir2KO_2")
+p3 <- DimPlot(Kir2HET_1, label = T, repel = T) + NoLegend() + ggtitle("Kir2HET_1")
+p4 <- DimPlot(WT_1, label = T, repel = T) + NoLegend() + ggtitle("WT_1")
+p5 <- DimPlot(WT_2, label = T, repel = T) + NoLegend() + ggtitle("WT_2")
+p6 <- DimPlot(WT_3, label = T, repel = T) + NoLegend() + ggtitle("WT_3")
+p1 + p2 + p3 + p4 + p5 + p6
+```
+
+# Integrate all 6 datasets
+```{r}
+Kir2KO_1$KO_type <- "KO"
+Kir2KO_2$KO_type <- "KO"
+Kir2HET_1$KO_type <- "HET"
+WT_1$KO_type <- "WT"
+WT_2$KO_type <- "WT"
+WT_3$KO_type <- "WT"
+```
+
+```{r, results=F}
+seuratlist <- list(Kir2KO_1, Kir2KO_2, Kir2HET_1, WT_1, WT_2, WT_3)
+features <- SelectIntegrationFeatures(object.list = seuratlist, nfeatures = 3000)
+seuratlist <- PrepSCTIntegration(object.list = seuratlist, anchor.features = features)
+seurat.anchors <- FindIntegrationAnchors(object.list = seuratlist,  reference = c(5), dims = 1:30, normalization.method = "SCT",
+    anchor.features = features)
+#seurat.anchors <- readRDS("RDSfiles/seurat.anchors.RDS")
+#saveRDS(seurat.anchors, file = "RDSfiles/seurat.anchors.RDS")
+```
+
+```{r}
+int.seurat <- IntegrateData(anchorset = seurat.anchors, normalization.method = "SCT", dims = 1:30)
+```
+
+```{r}
+int.seurat <- RunPCA(int.seurat, verbose = FALSE)
+```
+
+```{r}
+int.seurat <- RunUMAP(int.seurat, reduction = "pca", dims = 1:30)
+```
+## UMAP of integrated dataset - all 6
+```{r}
+p1 <- DimPlot(int.seurat, reduction = "umap", group.by = "orig.ident")
+#p2 <- DimPlot(int.seurat, reduction = "umap", group.by = "seurat_annotations", label = TRUE,
+#    repel = TRUE)
+p1
+```
+
+```{r}
+int.seurat <- FindNeighbors(int.seurat, verbose = F, dims = 1:30)
+int.seurat <- FindClusters(int.seurat, resolution = 0.1, verbose = F)
+int.seurat <- FindClusters(int.seurat, resolution = 0.2, verbose = F)
+int.seurat <- FindClusters(int.seurat, resolution = 0.3, verbose = F)
+int.seurat <- FindClusters(int.seurat, resolution = 0.4, verbose = F)
+int.seurat <- FindClusters(int.seurat, resolution = 0.5, verbose = F)
+int.seurat <- FindClusters(int.seurat, resolution = 0.6, verbose = F)
+```
+
+## UMAPs of clusters resolutions 0.1 to 0.6
+```{r, fig.height=10, fig.width=10}
+p1 <- DimPlot(int.seurat, label = T, repel = T, group.by = "integrated_snn_res.0.1") + scale_color_igv()
+p2 <- DimPlot(int.seurat, label = T, repel = T, group.by = "integrated_snn_res.0.2") + scale_color_igv()
+p3 <- DimPlot(int.seurat, label = T, repel = T, group.by = "integrated_snn_res.0.3") + scale_color_igv() 
+p4 <- DimPlot(int.seurat, label = T, repel = T, group.by = "integrated_snn_res.0.4") + scale_color_igv()
+p5 <- DimPlot(int.seurat, label = T, repel = T, group.by = "integrated_snn_res.0.5") + scale_color_igv()
+p6 <- DimPlot(int.seurat, label = T, repel = T, group.by = "integrated_snn_res.0.6") + scale_color_igv()
+p1 + p2 + p3 + p4 + p5 + p6
+```
+
+```{r}
+saveRDS(int.seurat, file = "RDSfiles/All.integrated.clustered.RDS")
+```
+
+# Remove Kir2HET_1 from integrated dataset
+```{r, fig.width=7, fig.height=3}
+Idents(int.seurat) <- "orig.ident"
+#Kir2HET_1 <- RenameIdents(object = Kir2HET_1, `Kir2KO_3` = "Kir2HET_1")
+mysubset <- subset(int.seurat, idents = "Kir2HET_1", invert = TRUE)
+```
+
+## UMAP of KO_1, KO_2, WT_1, WT_2, WT_3 dataset colored by sample or by cluster at resolution 0.3
+```{r, fig.width=7, fig.height=5}
+p1 <- DimPlot(mysubset) + scale_color_igv()
+p2 <- DimPlot(mysubset, group.by = "integrated_snn_res.0.2") + scale_color_igv()
+p1 + p2
+```
+```{r}
+saveRDS(mysubset, file = "RDSfiles/int5.clustered.RDS")
+```
+
+
+```{r}
+sessionInfo()
+```
+

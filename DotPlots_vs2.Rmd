@@ -1,0 +1,96 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(DESeq2)
+  library(viridis)
+  library(dorothea)
+  library(ggsci)
+  library(ggplot2)
+})
+```
+
+# 2. Read data
+```{r}
+seurat <- readRDS("../RDSfiles/All.integrated.clustered.RDS")
+DimPlot(seurat, group.by = c("orig.ident", "Clusters")) + scale_color_igv()
+```
+```{r}
+Idents(seurat) <- "orig.ident"
+int5 <- subset(seurat, idents = c("Kir2KO_3"), invert = T)
+DimPlot(int5, group.by = c("orig.ident","Clusters")) + scale_color_igv()
+```
+Note there is no Hand1 gene only Hand2
+
+```{r}
+Smad1genes <- c("Smad1","Shox2","Fgf10","Barx1","Msx1","Runx2","Wnt5a","Shh",
+                "Satb2","Hand2","Runx1","Runx3","Sp7")
+```
+
+```{r}
+if(!dir.exists("results/Smad1Plots_vs2")){
+  dir.create("results/Smad1Plots_vs2")
+}
+```
+
+```{r}
+Idents(int5) <- "Clusters"
+levels(int5) <- c("Mes_1","Mes_2","Mes_3","Mes_4","Prolif_1","Prolif_2","Prolif_3",
+                  "Ep_1","Ep_2","End","Imm","Schw")
+```
+
+```{r}
+p <- VlnPlot(int5, features = Smad1genes, split.by = "KO_type", cols = c("green","purple"), stack = T, flip = T)
+p
+ggsave(filename = "results/Smad1Plots_vs2/Smad1genes_VlnPlot_byGenotype.png", plot = p)
+```
+
+```{r, fig.width=10, fig.height=5}
+p <- VlnPlot(int5, features = Smad1genes, split.by = "orig.ident", cols = c("darkgreen","green","violet","purple","magenta"), stack = T, flip = T)
+p
+ggsave(filename = "results/Smad1Plots_vs2/Smad1genes_VlnPlot_bySample.png", plot = p)
+```
+
+```{r, fig.width=7, fig.height=12}
+int5$cluster_sample <- paste(int5$Clusters, int5$orig.ident)
+p <- DotPlot(int5, features = Smad1genes, group.by = "cluster_sample") + RotatedAxis()
+p
+ggsave(filename = "results/Smad1Plots_vs2/Smad1genes_DotPlot_bySample.png", plot = p)
+```
+
+```{r, fig.width=7, fig.height=6}
+int5$cluster_KOtype <- paste(int5$Clusters, int5$KO_type)
+p <- DotPlot(int5, features = Smad1genes, group.by = "cluster_KOtype") + RotatedAxis()
+p
+ggsave(filename = "results/Smad1Plots_vs2/Smad1genes_DotPlot_byGenotype.png", plot = p)
+```
+```{r}
+GO0086011_genes <- c("Kcnj8","Myh4","1500015O","Ostn","Abcc9","Tbx18","Kcna1","Kcnj2","Osr1","Mylk3",
+                     "Kcne4","Ryr3","Abi3bp","Stac")
+GO0086011_genes_b <- c("Kcnj8","Myh4","Ostn","Abcc9","Tbx18","Kcna1","Osr1","Mylk3",
+                     "Kcne4","Ryr3","Abi3bp","Stac")
+```
+
+```{r}
+p <- VlnPlot(int5, features = GO0086011_genes_b, split.by = "KO_type", cols = c("green","purple"), stack = T, flip = T)
+p
+ggsave(filename = "results/Smad1Plots_vs2/GO0086011genes_VlnPlot_byGenotype.png", plot = p)
+```
+
+```{r, fig.width=10, fig.height=5}
+p <- VlnPlot(int5, features = GO0086011_genes_b, split.by = "orig.ident", cols = c("darkgreen","green","violet","purple","magenta"), stack = T, flip = T)
+p
+ggsave(filename = "results/Smad1Plots_vs2/GO0086011genes_VlnPlot_bySample.png", plot = p)
+```
+```{r, fig.width=15, fig.height=30}
+FeaturePlot(int5, features = GO0086011_genes_b, split.by = "orig.ident")
+```
+
+```{r}
+sessionInfo()
+```
+

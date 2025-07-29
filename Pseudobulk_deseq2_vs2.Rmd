@@ -1,0 +1,514 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+library(Seurat)
+library(DESeq2)
+library(viridis)
+library(dorothea)
+library(tidyr)
+library(pheatmap)
+library(tibble)
+```
+
+# 2. Read data
+```{r}
+seurat <- readRDS("../RDSfiles/All.integrated.clustered.RDS")
+DimPlot(seurat, group.by = c("orig.ident", "Clusters")) + scale_color_igv()
+```
+
+# 3. DoRothEA TF database
+```{r}
+## We read Dorothea Regulons for mouse:
+dorothea_regulon_mouse <- get(data("dorothea_mm", package = "dorothea"))
+
+## No filtering of regulons
+regulon <- dorothea_regulon_mouse %>%
+    dplyr::filter(confidence %in% c("A","B","C"))
+```
+
+# 4. Prepare SeuratObject 
+```{r}
+Idents(seurat) <- "orig.ident"
+int5 <- subset(seurat, idents = c("Kir2KO_3"), invert = T)
+DimPlot(int5, group.by = c("orig.ident","Clusters")) + scale_color_igv()
+```
+
+```{r}
+Idents(int5) <- "Clusters"
+int5 <- subset(int5, idents = c("End","Imm","Schw"), invert = T)
+DimPlot(int5, group.by = c("orig.ident","Clusters")) + scale_color_igv()
+```
+
+# 5. Get pseudobulk counts
+```{r}
+DefaultAssay(int5) <- "RNA"
+AllAgg <- AggregateExpression(int5, assays = "RNA", slot = "counts",
+                               group.by = c("orig.ident","Clusters"),
+                              return.seurat = T)
+AllAgg
+```
+
+```{r}
+AllAgg$sample <- names(Idents(AllAgg))
+AllAgg@meta.data <- AllAgg@meta.data %>%
+  separate(sample, 
+           c("genotype","replicate","cluster","mes"), 
+           sep = "_") %>%
+  mutate(genotype = gsub("Kir2","",genotype)) %>%
+  mutate(cluster = paste0(cluster,mes) %>% gsub("NA","",.)) %>%
+  mutate(sample = paste0(genotype,replicate)) %>%
+  mutate(cluster_genotype = paste(cluster, genotype, sep = "_")) %>%
+  select(sample,genotype,replicate,cluster,cluster_genotype)
+AllAgg@meta.data
+```
+
+```{r}
+counts <- as.matrix(GetAssayData(AllAgg, assay = "RNA", slot = "counts"))
+counts[1:10,1:10]
+```
+
+```{r}
+sampleInfo <- AllAgg@meta.data
+sampleInfo
+```
+check that counts rownames and sampleInfo rownames match prior to creating DESeq2 object
+```{r}
+all(rownames(sampleInfo) %in% colnames(counts))
+all(rownames(sampleInfo) == colnames(counts))
+```
+
+# 5. DESeq2
+## 5.1 functions
+```{r}
+Subset_DESeq <- function(cluster, seurat){
+  Idents(seurat) <- "cluster"
+  mysubset <- subset(seurat, idents = cluster)
+  sampleInfo <- mysubset@meta.data
+  counts <- as.matrix(GetAssayData(mysubset, assay = "RNA", slot = "counts"))
+  
+  dds <- DESeqDataSetFromMatrix(countData = counts,
+                                colData = sampleInfo,
+                                design = ~genotype)
+  
+  # filter genes for counts >=10 in at least 2 samples
+  smallestGroupSize <- 2
+  keep <- rowSums(counts(dds) >= 10) >= smallestGroupSize
+  dds <- dds[keep,]
+  datalist <- list()
+  datalist[["dds"]] <- dds
+  datalist[["seurat"]] <- mysubset
+  
+  return(datalist)
+}
+
+Analyze_dds <- function(datalist, padj_cutoff = 0.05){
+  rld <- rlog(datalist[["dds"]], blind = T)
+  print(DESeq2::plotPCA(rld, intgroup = "genotype"))
+  
+  rld_mat <- assay(rld)
+  rld_cor <- cor(rld_mat)
+  
+  print(pheatmap(rld_cor, annotation = datalist[["seurat"]]@meta.data[, c("genotype"), drop=F]))
+  
+  datalist[["dds"]] <- DESeq(datalist[["dds"]])
+  print(plotDispEsts(datalist[["dds"]]))
+  
+  contrast <- c("genotype", "KO","WT")
+  
+  datalist[["res"]] <- lfcShrink(dds = datalist[["dds"]], coef = 2, type = "apeglm")
+  
+  datalist[["res_tbl"]] <- datalist[["res"]] %>%
+    data.frame() %>%
+    rownames_to_column(var="gene") %>%
+    as_tibble()
+  
+  # Subset the significant results
+  datalist[["sig_res"]] <- dplyr::filter(datalist[["res_tbl"]], padj < padj_cutoff) %>%
+    dplyr::arrange(padj)
+  
+  return(datalist)
+}
+
+ScatterPlot_topDEgenes <- function(datalist, n){
+  normalized_counts <- counts(datalist[["dds"]], normalized = T)
+  
+  top_sig_genes <- datalist[["sig_res"]] %>%
+    dplyr::arrange(padj) %>%
+    dplyr::pull(gene) %>%
+    head(n=n)
+  
+  top_sig_norm <- data.frame(normalized_counts) %>%
+    rownames_to_column(var = "gene") %>%
+    dplyr::filter(gene %in% top_sig_genes)
+  
+  gathered_top_sig <- top_sig_norm %>%
+    gather(colnames(top_sig_norm)[2:length(colnames(top_sig_norm))], key = "samplename", value = "normalized_counts")
+  
+  gathered_top_sig <- inner_join(tibble::rownames_to_column(datalist[["seurat"]]@meta.data[,c("genotype","sample")], 
+                                                            var = "samplename"), 
+                                 gathered_top_sig, by = "samplename")
+  
+  print(ggplot(gathered_top_sig) +
+          geom_point(aes(x = gene, 
+                         y = normalized_counts, 
+                         color = genotype), 
+                     position=position_jitter(w=0.1,h=0)) +
+          scale_y_log10() +
+          xlab("Genes") +
+          ylab("log10 Normalized Counts") +
+          ggtitle(paste("Top",n,"Significant DE Genes")) +
+          theme_bw() +
+          theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+          theme(plot.title = element_text(hjust = 0.5))
+  )
+}
+
+Pheatmap_DEgenes <- function(datalist){
+  normalized_counts <- counts(datalist[["dds"]], normalized = T)
+  
+  # Extract normalized counts for only the significant genes
+  sig_norm <- data.frame(normalized_counts) %>%
+    rownames_to_column(var = "gene") %>%
+    dplyr::filter(gene %in% datalist[["sig_res"]]$gene)
+  
+  # Set a color palette
+  heat_colors <- viridis(100)
+  
+  # Run pheatmap using the metadata data frame for the annotation
+  print(pheatmap(sig_norm[ , 2:length(colnames(sig_norm))], 
+                 color = heat_colors, 
+                 cluster_rows = T, 
+                 show_rownames = F,
+                 annotation = datalist[["seurat"]]@meta.data[,c("genotype","sample")], 
+                 border_color = NA, 
+                 fontsize = 10, 
+                 scale = "row", 
+                 fontsize_row = 10, 
+                 height = 20)
+  )
+}
+
+Pheatmap_pathwayGenes <- function(datalist, TF, regulon){
+  normalized_counts <- counts(datalist[["dds"]], normalized = T)
+  
+  sig_norm <- data.frame(normalized_counts) %>%
+    rownames_to_column(var = "gene") %>%
+    dplyr::filter(gene %in% regulon$target[regulon$tf == TF]) %>%
+    column_to_rownames(var = "gene")
+  
+  # Set a color palette
+  heat_colors <- viridis(100)
+  
+  # Run pheatmap using the metadata data frame for the annotation
+  print(pheatmap(sig_norm, 
+                 color = heat_colors, 
+                 cluster_rows = T, 
+                 show_rownames = T,
+                 annotation = datalist[["seurat"]]@meta.data[,c("genotype","sample")],
+                 border_color = NA, 
+                 fontsize = 10, 
+                 scale = "row", 
+                 fontsize_row = 10, 
+                 height = 20,
+                 main = paste0(TF, " pathway genes")) 
+  )
+}
+
+Pheatmap_GeneList <- function(datalist, genelist){
+  normalized_counts <- counts(datalist[["dds"]], normalized = T)
+  
+  sig_norm <- data.frame(normalized_counts) %>%
+    rownames_to_column(var = "gene") %>%
+    dplyr::filter(gene %in% genelist) %>%
+    column_to_rownames(var = "gene")
+  
+  # Set a color palette
+  heat_colors <- viridis(100)
+  
+  # Run pheatmap using the metadata data frame for the annotation
+  print(pheatmap(sig_norm, 
+                 color = heat_colors, 
+                 cluster_rows = T, 
+                 show_rownames = T,
+                 annotation = datalist[["seurat"]]@meta.data[,c("genotype","sample")],
+                 border_color = NA, 
+                 fontsize = 10, 
+                 scale = "row", 
+                 fontsize_row = 10, 
+                 height = 20) 
+  )
+}
+
+ScatterPlot_GeneList <- function(datalist, genelist){
+  normalized_counts <- counts(datalist[["dds"]], normalized = T)
+  
+  gene_norm <- data.frame(normalized_counts) %>%
+    rownames_to_column(var = "gene") %>%
+    dplyr::filter(gene %in% genelist)
+  
+  gathered_gene <- gene_norm %>%
+    gather(colnames(gene_norm)[2:length(colnames(gene_norm))], 
+           key = "samplename", value = "normalized_counts")
+  
+  gathered_gene <- inner_join(tibble::rownames_to_column(datalist[["seurat"]]@meta.data[,c("genotype","sample")], 
+                                                         var = "samplename"), 
+                              gathered_gene, by = "samplename")
+  
+  print(ggplot(gathered_gene) +
+          geom_point(aes(x = gene, 
+                         y = normalized_counts, 
+                         color = genotype,), 
+                     position=position_jitter(w=0.1,h=0)) +
+          scale_y_log10() +
+          xlab("Genes") +
+          ylab("log10 Normalized Counts") +
+          theme_bw() +
+          theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+          theme(plot.title = element_text(hjust = 0.5)) +
+          scale_colour_manual(values = c("green","purple"))
+  )
+}
+```
+
+```{r}
+if(!dir.exists("results")){
+  dir.create("results")
+}
+if(!dir.exists("results/GO_analysis")){
+  dir.create("results/GO_analysis")
+}
+```
+
+
+## 5.2 Mes_1
+setup DESeq object of pseudobulk RNA-seq for cluster Mes_1
+```{r}
+Mes_1 <- Subset_DESeq("Mes1", AllAgg)
+```
+
+run DESeq
+```{r}
+Mes_1 <- Analyze_dds(Mes_1, padj_cutoff = 0.05)
+```
+```{r}
+Mes_1[["sig_res"]]
+write.csv(Mes_1[["sig_res"]], file = "results/GO_analysis/Mes_1_DESeq_sig_res.csv", quote = F, row.names = F)
+```
+
+scatterplot of top 20 DE genes
+```{r}
+ScatterPlot_topDEgenes(Mes_1, 20)
+```
+
+heatmap significantly DE genes
+```{r}
+Pheatmap_DEgenes(Mes_1)
+```
+
+heatmaps TF pathway genes
+```{r, fig.width=5, fig.height=10}
+for(TF in c("Myod1", "Jun", "Hif1a", "Smad1", "Mef2b", "Creb1", "Fos", "Egr1")){
+  print(Pheatmap_pathwayGenes(Mes_1, TF, regulon))
+}
+```
+heatmap of genelist from Emily -- these are Smad1 palette genes
+```{r}
+Smad1genes <- c("Smad1","Shox2", "Fgf10", "Barx1", "Msx1", "Runx2", "Wnt5a")
+```
+
+```{r}
+Pheatmap_GeneList(Mes_1, Smad1genes)
+```
+
+```{r}
+ScatterPlot_GeneList(Mes_1, Smad1genes)
+```
+
+```{r}
+GO0086011_genes <- c("Kcnj8","Myh4","1500015O","Ostn","Abcc9","Tbx18","Kcna1","Kcnj2","Osr1","Mylk3",
+                     "Kcne4","Ryr3","Abi3bp","Stac")
+GO0086011_genes_b <- c("Kcnj8","Myh4","Ostn","Abcc9","Tbx18","Kcna1","Osr1","Mylk3",
+                     "Kcne4","Ryr3","Abi3bp","Stac")
+```
+
+```{r}
+ScatterPlot_GeneList(Mes_1, GO0086011_genes)
+```
+
+```{r}
+p <- ScatterPlot_GeneList(Mes_1, GO0086011_genes_b)
+p
+ggsave(filename = "results/GO_analysis/Mes1_GO0086011_gene_exp.png", plot = p)
+```
+
+## 5.3 Mes_2
+setup DESeq object of pseudobulk RNA-seq for cluster Mes_2
+```{r}
+Mes_2 <- Subset_DESeq("Mes2", AllAgg)
+```
+
+run DESeq
+```{r}
+Mes_2 <- Analyze_dds(Mes_2, padj_cutoff = 0.05)
+```
+
+```{r}
+Mes_2[["sig_res"]]
+write.csv(Mes_2[["sig_res"]], file = "results/GO_analysis/Mes_2_DESeq_sig_res.csv", quote = F, row.names = F)
+```
+
+scatterplot of top 20 DE genes
+```{r}
+ScatterPlot_topDEgenes(Mes_2, 20)
+```
+
+heatmap significantly DE genes
+```{r}
+Pheatmap_DEgenes(Mes_2)
+```
+
+heatmaps TF pathway genes
+```{r, fig.width=5, fig.height=10}
+for(TF in c("Myod1", "Jun", "Hif1a", "Smad1", "Mef2b", "Creb1", "Fos", "Egr1")){
+  print(Pheatmap_pathwayGenes(Mes_2, TF, regulon))
+}
+```
+
+```{r}
+Pheatmap_GeneList(Mes_2, Smad1genes)
+```
+
+```{r}
+ScatterPlot_GeneList(Mes_2, Smad1genes)
+```
+
+## 5.4 Mes_3
+setup DESeq object of pseudobulk RNA-seq for cluster Mes_3
+```{r}
+Mes_3 <- Subset_DESeq("Mes3", AllAgg)
+```
+
+run DESeq
+```{r}
+Mes_3 <- Analyze_dds(Mes_3, padj_cutoff = 0.05)
+```
+
+```{r}
+Mes_3[["sig_res"]]
+write.csv(Mes_3[["sig_res"]], file = "results/GO_analysis/Mes_3_DESeq_sig_res.csv", quote = F, row.names = F)
+```
+
+scatterplot of top 20 DE genes
+```{r}
+ScatterPlot_topDEgenes(Mes_3, 20)
+```
+
+heatmap significantly DE genes
+```{r}
+Pheatmap_DEgenes(Mes_3)
+```
+
+heatmaps TF pathway genes
+```{r, fig.width=5, fig.height=10}
+for(TF in c("Myod1", "Jun", "Hif1a", "Smad1", "Mef2b", "Creb1", "Fos", "Egr1")){
+  print(Pheatmap_pathwayGenes(Mes_3, TF, regulon))
+}
+```
+
+```{r}
+Pheatmap_GeneList(Mes_3, Smad1genes)
+```
+
+```{r}
+ScatterPlot_GeneList(Mes_3, Smad1genes)
+```
+
+## 5.5 Mes_4
+setup DESeq object of pseudobulk RNA-seq for cluster Mes_4
+```{r}
+Mes_4 <- Subset_DESeq("Mes4", AllAgg)
+```
+
+run DESeq
+```{r}
+Mes_4 <- Analyze_dds(Mes_4, padj_cutoff = 0.05)
+```
+
+```{r}
+Mes_4[["sig_res"]]
+write.csv(Mes_4[["sig_res"]], file = "results/GO_analysis/Mes_4_DESeq_sig_res.csv", quote = F, row.names = F)
+```
+
+scatterplot of top 20 DE genes
+```{r}
+ScatterPlot_topDEgenes(Mes_4, 20)
+```
+
+heatmap significantly DE genes
+```{r}
+Pheatmap_DEgenes(Mes_4)
+```
+
+heatmaps TF pathway genes
+```{r, fig.width=5, fig.height=10}
+for(TF in c("Myod1", "Jun", "Hif1a", "Smad1", "Mef2b", "Creb1", "Fos", "Egr1")){
+  print(Pheatmap_pathwayGenes(Mes_4, TF, regulon))
+}
+```
+
+```{r}
+Pheatmap_GeneList(Mes_4, Smad1genes)
+```
+
+```{r}
+ScatterPlot_GeneList(Mes_4, Smad1genes)
+```
+
+## 5.5 Mes_4
+setup DESeq object of pseudobulk RNA-seq for cluster Mes_4
+```{r}
+AllMes <- Subset_DESeq(c("Mes1","Mes2","Mes3","Mes4"), AllAgg)
+```
+
+run DESeq
+```{r}
+AllMes <- Analyze_dds(AllMes, padj_cutoff = 0.05)
+```
+
+```{r}
+AllMes[["sig_res"]]
+write.csv(AllMes[["sig_res"]], file = "results/GO_analysis/AllMes_DESeq_sig_res.csv", quote = F, row.names = F)
+```
+
+scatterplot of top 20 DE genes
+```{r}
+ScatterPlot_topDEgenes(AllMes, 20)
+```
+
+heatmap significantly DE genes
+```{r}
+Pheatmap_DEgenes(AllMes)
+```
+
+heatmaps TF pathway genes
+```{r, fig.width=5, fig.height=10}
+for(TF in c("Myod1", "Jun", "Hif1a", "Smad1", "Mef2b", "Creb1", "Fos", "Egr1")){
+  print(Pheatmap_pathwayGenes(AllMes, TF, regulon))
+}
+```
+
+```{r}
+Pheatmap_GeneList(AllMes, Smad1genes)
+```
+
+```{r}
+ScatterPlot_GeneList(AllMes, Smad1genes)
+```
+
+```{r}
+sessionInfo()
+```
+

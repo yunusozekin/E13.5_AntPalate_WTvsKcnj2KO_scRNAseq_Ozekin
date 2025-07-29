@@ -1,0 +1,208 @@
+---
+title: "Cluster Analysis of KO1, KO2, WT1, WT2, WT3 integrated single cell RNAseq R Notebook"
+output: 
+  html_notebook:
+    toc: TRUE
+    toc_depth: 3
+    toc_float: TRUE
+---
+
+```{css, echo = F}
+caption {
+      color: blue;
+      font-weight: bold;
+      font-size: 2.0em;
+    }
+```
+
+
+```{r, results='hide', message=FALSE, warning=FALSE, error=FALSE}
+library(Seurat)
+library(sctransform)
+library(ggplot2)
+library(dplyr)
+library(ggsci)
+library(cowplot)
+library(scater)
+library(patchwork)
+options(future.globals.maxSize = 4000 * 1024^2)
+```
+```{r}
+mypal <- pal_igv(palette = "default",alpha = 1)(30)
+```
+
+
+# Read Data
+
+```{r}
+int.seurat <- readRDS(file = "RDSfiles/All.integrated.clustered.RDS")
+```
+
+```{r}
+DimPlot(int.seurat, group.by = "integrated_snn_res.0.2", label = T, repel = T) + scale_color_igv()
+```
+
+# Cluster Marker Genes
+
+## All Markers ignoring whether cells are in KO or WT
+
+Here the differentially expressed genes comparing the cells in each cluster to all other cells are found (ignoring those with negative log2FC, so those decreased in the cluster compared to all other cells).  The full table of DE genes are saved in MarkersandPlots/All.markers.int5.txt which can be opened in excel.  The top10 table and dotplots are found by sorting the table by cluster for the top10 genes by p value and if there are ties (more than 10 with p value = 0), then sorting those by log2FC (fold change).  The pct.1 value is the percentage of cells in the cluster of interest expressing the gene and the pct.2 value is the percentage of all other cells expressing the gene.
+```{r, results=F}
+Idents(int.seurat) <- "Clusters"
+DefaultAssay(int.seurat) <- "SCT"
+int.seurat$cluster <- Idents(int.seurat)
+
+int.seurat <- PrepSCTFindMarkers(int.seurat, assay = "SCT")
+All.markers <- FindAllMarkers(int.seurat, only.pos = TRUE)
+top10 <- All.markers %>% group_by(cluster) %>% top_n(n=-10, wt = p_val) %>% top_n(n=10, wt = avg_log2FC)
+top10
+top30 <- All.markers %>% group_by(cluster) %>% top_n(n=-30, wt = p_val) %>% top_n(n=30, wt = avg_log2FC)
+```
+
+```{r}
+write.table(All.markers, file = "MarkersandPlots/All.markers.int5.txt", sep = "\t", quote = F, col.names = NA)
+```
+
+```{r}
+saveRDS(All.markers, file = "RDSfiles/All.markers.int5.RDS")
+```
+
+
+### Top10 genes dotPlots
+```{r, fig.width=18, fig.height=18}
+Idents(int.seurat) <- "Clusters"
+levels(int.seurat) <- c("Mes_1", "Mes_2", "Mes_3", "Mes_4", "Prolif_1", "Prolif_2", "Prolif_3",  "Ep_1", "Ep_2", "End", "Imm", "Schw")
+png(filename = "KO_Top10.png", width = 15, height = 17.5, units = "in", res = 300)
+top10_dotplots <- list()
+for(cluster in levels(int.seurat)){
+  top10_dotplots[[cluster]] <- DotPlot(int.seurat, features = top10$gene[top10$cluster == cluster]) + RotatedAxis() + ggtitle(paste("Cluster ",cluster))
+}
+wrap_plots(top10_dotplots, ncol = 3)
+dev.off()
+```
+
+
+
+### Top30 genes dotPlots
+
+These are simple the top30 rather than top10 genes and each cluster plot printed individually so the genes are clearly readable.
+```{r, fig.width=30, fig.height=10}
+top30_dotplots <- list()
+for(cluster in levels(int.seurat)){
+  top30_dotplots[[cluster]] <- DotPlot(int.seurat, features = top30$gene[top30$cluster == cluster]) + RotatedAxis() + ggtitle(paste("Cluster ",cluster))
+}
+wrap_plots(top30_dotplots, ncol = 4)
+```
+
+## All Markers finding conserved DE genes in Het, KO, and WT cells in given cluster
+```{r, results=F}
+Idents(int.seurat) <- "integrated_snn_res.0.2"
+DefaultAssay(int.seurat) <- "SCT"
+
+All.cons.markers <- list()
+for(cluster in levels(int.seurat)){
+  All.cons.markers[[cluster]] <- FindConservedMarkers(int.seurat, ident.1 = cluster, grouping.var = "KO_type")
+}
+```
+
+
+```{r}
+for(cluster in names(All.cons.markers)){
+  print(paste("Cluster ",cluster))
+  print(head(All.cons.markers[[cluster]],10))
+  write.table(All.cons.markers[[cluster]], file = paste("MarkersandPlots/ConservedMarkers/Cluster",cluster,"txt"), sep = "\t", quote = FALSE, col.names = NA)
+}
+
+```
+
+### Top10 genes dotPlots
+```{r, fig.width=18, fig.height=18}
+
+top10cons_dotplots <- list()
+for(cluster in levels(int.seurat)){
+  top10cons_dotplots[[cluster]] <- DotPlot(int.seurat, features = rownames(head(All.cons.markers[[cluster]],10))) + RotatedAxis() + ggtitle(paste("Cluster ",cluster))
+}
+wrap_plots(top10cons_dotplots, ncol = 4)
+
+```
+
+### Top10 genes dotPlots
+```{r, fig.width=5, fig.height=5}
+for(cluster in levels(int.seurat)){
+  p <- DotPlot(int.seurat, features = rownames(head(All.cons.markers[[cluster]],10))) + RotatedAxis() + ggtitle(paste("Cluster ",cluster))
+  print(p)
+}
+```
+
+# Marker Gene Plots
+
+There are various ways to visualize gene expression in the single cell RNA-seq. Here I've plotted the same genes, the mesenchyme genes, ectoderm genes and the gene list from Emily as gene expression UMAP plots, dot plot, heatmap and violin plots.  I've plotted the genes in dotplots and violin plot both by cluster and also by cluster split into KO samples and WT samples.  
+```{r}
+mesenchyme.genes <- c("Msx1", "Shox2","Osr2", "Runx2", "Epha3", "Ogn")
+ectoderm.genes <- c("Epcam","Igfbp2","Trp63","Cldn7","Krt18") 
+genelist <- c("Pdgfa","Kcnj2","Kcnj8","Pou3f3","Msx1","Msx2","Bmpr1a","Bmpr1b","Bmp2","Bmp4","Lef1","Runx2","Dlx5","Dlx6","Top2a","Bumper","Kcnj13","Kcnj3")
+```
+
+## Gene expression UMAPs
+
+### Mesenchyme genes
+```{r, fig.width=5, fig.height=10}
+
+FeaturePlot(int.seurat, features = mesenchyme.genes)
+```
+```{r}
+DefaultAssay(int.seurat) <- "SCT"
+Idents(int.seurat) <- "Clusters"
+levels(int.seurat) <- c("Mes_1", "Mes_2", "Mes_3", "Mes_4", "Prolif_1", "Prolif_2", "Prolif_3",  "Ep_1", "Ep_2", "End", "Imm", "Schw")
+
+
+png(filename = "KO_Top2.png", width = 7.5, height = 5, units = "in", res = 300)
+DotPlot(int.seurat, features = c("Runx2", "Msx1", "Osr2", "Shox2", "Epha3", "Egfl6", "Ogn", "Mecom",  "Cenpa", "Tubb4b", "Hist1h3c", "Hist1h1b", "Ccne2", "Cdc6", "Igfbp2", "Trp63", "Cldn7", "Krt18", "Pecam1", "Sparcl1", "Fcer1g", "Tyrobp", "Fabp7", "Mpz")) + RotatedAxis()
+dev.off()
+
+
+png(filename = "KO_Cluster_FeaturePlot.png", width = 7.5, height = 5, units = "in", res = 300)
+FeaturePlot(int.seurat, features = c("Col1a2", "Top2a", "Epcam", "Pecam1", "Fcer1g", "Fabp7"), ncol = 3)
+dev.off()
+```
+
+### Ectoderm genes
+```{r, fig.width=5, fig.height=10}
+FeaturePlot(int.seurat, features = ectoderm.genes)
+```
+
+
+```{r, fig.width=10, fig.height=6}
+Idents(int.seurat) <- "integrated_snn_res.0.3"
+DimPlot(int.seurat, label = TRUE, label.size = 10, pt.size = 1)
+DotPlot(int.seurat, split.by = "KO_type", cols = c("aquamarine4", "brown4", "darkgoldenrod1"), features = c("Kcnj2", "Prrx1", "Aspn", "Bmp2", "Bmp4", "Thbs2", "Gja1", "Gjc1"))
+```
+
+# Cluster Naming
+```{r}
+Idents(int.seurat) <- "integrated_snn_res.0.2"
+int.seurat <- RenameIdents(int.seurat,
+                           "0" = "Mes_1",
+                           "1" = "Mes_2",
+                           "2" = "Mes_3",
+                           "3" = "Mes_4",
+                           "4" = "Prolif_2",
+                           "5" = "Ep_1",
+                           "6" = "Prolif_1",
+                           "7" = "Prolif_3",
+                           "8" = "End",
+                           "9" = "Ep_2",
+                           "10" = "Imm",
+                           "11" = "Schw")
+
+int.seurat$Clusters <- Idents(int.seurat)
+
+png(filename = "KO_Cluster_UMAP_2.png", width = 7.5, height = 5, units = "in", res = 300)
+DimPlot(int.seurat, group.by = "KO_type", label = F, repel = T) + scale_color_igv()
+dev.off
+```
+
+```{r}
+sessionInfo()
+```
+

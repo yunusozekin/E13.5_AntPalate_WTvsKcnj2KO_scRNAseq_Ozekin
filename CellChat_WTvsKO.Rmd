@@ -1,0 +1,1247 @@
+---
+title: "Cellchat_WTvsKO"
+author: "Yunus Ozekin"
+date: "2025-03-11"
+output: html_document
+---
+
+```{css, echo = F}
+caption {
+      color: blue;
+      font-weight: bold;
+      font-size: 2.0em;
+    }
+```
+
+# Installation of packages
+```{r, results=F}
+
+#library(devtools)
+#devtools::install_github("jinworks/CellChat")
+
+#install.packages('NMF')
+#devtools::install_github("jokergoo/circlize")
+#devtools::install_github("jokergoo/ComplexHeatmap")
+```
+
+# Packages and Functions
+```{r, echo=FALSE}
+library(CellChat)
+library(patchwork)
+library(Seurat)
+options(stringsAsFactors = FALSE)
+```
+
+```{r}
+mem.maxVSize(vsize = 32000000000)
+```
+
+# Read Data
+
+```{r, echo=FALSE}
+int.seurat <- readRDS(file = "RDSfiles/All.integrated.clustered.RDS")
+```
+
+```{r}
+DefaultAssay(int.seurat) <- "SCT"
+Idents(int.seurat) <- "KO_type"
+
+# Split WT and KO datasets
+WT <-subset(int.seurat, idents = "WT")
+KO <-subset(int.seurat, idents = "KO")
+
+#Subset out Mes and Ep clusters to simplify analysis
+Idents(WT) <- "Clusters"
+Idents(KO) <-"Clusters"
+WT <- subset(WT, idents = c("Mes_1", "Mes_2", "Mes_3", "Mes_4", "Ep_1", "Ep_2"))
+
+KO <- subset(KO, idents = c("Mes_1", "Mes_2", "Mes_3", "Mes_4", "Ep_1", "Ep_2"))
+
+
+DimPlot(WT, label = T, group.by = "Clusters")
+DimPlot(KO, label = T, group.by = "Clusters")
+```
+
+# Create CellChat
+```{r, results=F}
+DefaultAssay(WT) <- "SCT"
+DefaultAssay(KO) <- "SCT"
+
+meta_WT = WT@meta.data
+meta_WT$Clusters <- droplevels(meta_WT$Clusters, exclude = c("Prolif_1", "Prolif_2", "Prolif_3", "Imm", "Schw", "End"))
+
+meta_KO = KO@meta.data
+meta_KO$Clusters <- droplevels(meta_KO$Clusters, exclude = c("Prolif_1", "Prolif_2", "Prolif_3", "Imm", "Schw", "End"))
+
+
+cellchat_WT <- createCellChat(object = WT, meta = meta_WT, group.by = "Clusters")
+cellchat_KO <- createCellChat(object = KO, meta = meta_KO, group.by = "Clusters")
+```
+
+# Set ligand-receptor database
+```{r}
+CellChatDB <- CellChatDB.mouse 
+showDatabaseCategory(CellChatDB)
+```
+
+```{r}
+dplyr::glimpse(CellChatDB$interaction)
+```
+```{r}
+cellchat_WT@DB <- CellChatDB
+cellchat_KO@DB <- CellChatDB
+```
+
+```{r}
+library(presto)
+options(future.globals.maxSize = 2000 * 1024^2)
+# subset the expression data of signaling genes for saving computation cost
+cellchat_WT <- subsetData(cellchat_WT) # This step is necessary even if using the whole database
+future::plan("multisession", workers = 4) # do parallel
+cellchat_WT <- identifyOverExpressedGenes(cellchat_WT)
+cellchat_WT <- identifyOverExpressedInteractions(cellchat_WT)
+
+
+# subset the expression data of signaling genes for saving computation cost
+cellchat_KO <- subsetData(cellchat_KO) # This step is necessary even if using the whole database
+future::plan("multisession", workers = 4) # do parallel
+cellchat_KO <- identifyOverExpressedGenes(cellchat_KO)
+cellchat_KO <- identifyOverExpressedInteractions(cellchat_KO)
+
+```
+
+```{r}
+cellchat_WT <- computeCommunProb(cellchat_WT, type = "triMean")
+cellchat_KO <- computeCommunProb(cellchat_KO, type = "triMean")
+
+```
+
+```{r}
+cellchat_WT <- filterCommunication(cellchat_WT, min.cells = 10)
+cellchat_KO <- filterCommunication(cellchat_KO, min.cells = 10)
+```
+
+
+```{r}
+cellchat_WT <- computeCommunProbPathway(cellchat_WT)
+cellchat_KO <- computeCommunProbPathway(cellchat_KO)
+```
+
+```{r}
+cellchat_WT <- aggregateNet(cellchat_WT)
+cellchat_KO <- aggregateNet(cellchat_KO)
+```
+
+```{r}
+groupSize_WT <- as.numeric(table(cellchat_WT@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat_WT@net$count, vertex.weight = groupSize_WT, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(cellchat_WT@net$weight, vertex.weight = groupSize_WT, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+
+groupSize_KO <- as.numeric(table(cellchat_KO@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat_KO@net$count, vertex.weight = groupSize_KO, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(cellchat_KO@net$weight, vertex.weight = groupSize_KO, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+```
+
+```{r}
+mat_WT <- cellchat_WT@net$weight
+par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat_WT)) {
+  mat2WT <- matrix(0, nrow = nrow(mat_WT), ncol = ncol(mat_WT), dimnames = dimnames(mat_WT))
+  mat2WT[i, ] <- mat_WT[i, ]
+  netVisual_circle(mat2WT, weight.scale = T, edge.weight.max = max(mat_WT), title.name = rownames(mat_WT)[i])
+}
+
+mat_KO <- cellchat_KO@net$weight
+par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat_KO)) {
+  mat2KO <- matrix(0, nrow = nrow(mat_KO), ncol = ncol(mat_KO), dimnames = dimnames(mat_KO))
+  mat2KO[i, ] <- mat_KO[i, ]
+  netVisual_circle(mat2KO, weight.scale = T, edge.weight.max = max(mat_KO), title.name = rownames(mat_KO)[i])
+}
+```
+```{r}
+# Chord diagram
+pathways.show <- c("BMP") 
+par(mfrow=c(1,1))
+netVisual_aggregate(cellchat_WT, signaling = pathways.show, layout = "chord")
+netVisual_aggregate(cellchat_KO, signaling = pathways.show, layout = "chord")
+```
+```{r}
+par(mfrow=c(1,1))
+netVisual_heatmap(cellchat_WT, signaling = pathways.show, color.heatmap = "Reds")
+netVisual_heatmap(cellchat_KO, signaling = pathways.show, color.heatmap = "Reds")
+```
+
+```{r}
+# Chord diagram
+group.cellType <- c(rep("Mes", 4), rep("Ep", 2)) # grouping cell clusters into Mes and Ep cells
+
+names(group.cellType) <- levels(cellchat_WT@idents)
+netVisual_chord_cell(cellchat_WT, signaling = pathways.show, group = group.cellType, title.name = paste0(pathways.show, " signaling network"))
+
+
+netVisual_chord_cell(cellchat_KO, signaling = pathways.show, group = group.cellType, title.name = paste0(pathways.show, " signaling network"))
+```
+```{r}
+netAnalysis_contribution(cellchat_WT, signaling = pathways.show)
+netAnalysis_contribution(cellchat_KO, signaling = pathways.show)
+```
+```{r}
+pairLR.BMP <- extractEnrichedLR(cellchat_WT, signaling = pathways.show, geneLR.return = FALSE)
+LR.show <- pairLR.BMP[1,] # show one ligand-receptor pair
+# Hierarchy plot
+vertex.receiver = seq(1,4) # a numeric vector
+netVisual_individual(cellchat_WT, signaling = pathways.show,  pairLR.use = LR.show, vertex.receiver = vertex.receiver)
+#> [[1]]
+# Circle plot
+netVisual_individual(cellchat_WT, signaling = pathways.show, pairLR.use = LR.show, layout = "circle")
+
+netVisual_individual(cellchat_KO, signaling = pathways.show,  pairLR.use = LR.show, vertex.receiver = vertex.receiver)
+#> [[1]]
+# Circle plot
+netVisual_individual(cellchat_KO, signaling = pathways.show, pairLR.use = LR.show, layout = "circle")
+```
+
+```{r}
+# Chord diagram
+netVisual_individual(cellchat_WT, signaling = pathways.show, pairLR.use = LR.show, layout = "chord")
+
+netVisual_individual(cellchat_KO, signaling = pathways.show, pairLR.use = LR.show, layout = "chord")
+```
+```{r}
+plotGeneExpression(cellchat_WT, signaling = "BMP", enriched.only = TRUE, type = "violin")
+plotGeneExpression(cellchat_KO, signaling = "BMP", enriched.only = TRUE, type = "violin")
+```
+
+```{r}
+cellchat_WT <- netAnalysis_computeCentrality(cellchat_WT, slot.name = "netP") # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+# Visualize the computed centrality scores using heatmap, allowing ready identification of major signaling roles of cell groups
+netAnalysis_signalingRole_network(cellchat_WT, signaling = pathways.show, width = 8, height = 2.5, font.size = 10)
+
+cellchat_KO <- netAnalysis_computeCentrality(cellchat_KO, slot.name = "netP") # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+# Visualize the computed centrality scores using heatmap, allowing ready identification of major signaling roles of cell groups
+netAnalysis_signalingRole_network(cellchat_KO, signaling = pathways.show, width = 8, height = 2.5, font.size = 10)
+```
+```{r}
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+gg1 <- netAnalysis_signalingRole_scatter(cellchat_WT)
+#> Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+# Signaling role analysis on the cell-cell communication networks of interest
+gg2 <- netAnalysis_signalingRole_scatter(cellchat_WT, signaling = c("BMP", "Hh"))
+#> Signaling role analysis on the cell-cell communication network from user's input
+gg3 <- netAnalysis_signalingRole_scatter(cellchat_KO)
+#> Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+# Signaling role analysis on the cell-cell communication networks of interest
+gg4 <- netAnalysis_signalingRole_scatter(cellchat_KO, signaling = c("BMP", "Hh"))
+#> Signaling role analysis on the cell-cell communication network from user's input
+gg1 + gg2
+gg3 + gg4
+```
+```{r, fig.height=10, fig.width=10}
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat_WT, pattern = "outgoing", width = 7, height = 15)
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat_WT, pattern = "incoming", width = 7, height = 15)
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+ht3 <- netAnalysis_signalingRole_heatmap(cellchat_KO, pattern = "outgoing", width = 7, height = 15)
+ht4 <- netAnalysis_signalingRole_heatmap(cellchat_KO, pattern = "incoming", width = 7, height = 15)
+ht1 + ht2
+ht3 + ht4
+
+```
+
+```{r}
+library(NMF)
+library(ggalluvial)
+selectK(cellchat_WT, pattern = "outgoing")
+selectK(cellchat_KO, pattern = "outgoing")
+```
+
+```{r, fig.height=7}
+nPatterns_WT = 5
+p1 <- cellchat_WT <- identifyCommunicationPatterns(cellchat_WT, pattern = "outgoing", k = nPatterns_WT, width = 7, height = 15)
+
+```
+```{r, fig.height=7}
+nPatterns_KO = 5
+p2 <- cellchat_KO <- identifyCommunicationPatterns(cellchat_KO, pattern = "outgoing", k = nPatterns_KO, width = 7, height = 15)
+
+```
+
+```{r}
+# river plot
+netAnalysis_river(cellchat_WT, pattern = "outgoing")
+
+netAnalysis_river(cellchat_KO, pattern = "outgoing")
+```
+
+```{r}
+# dot plot
+netAnalysis_dot(cellchat_WT, pattern = "outgoing")
+
+netAnalysis_dot(cellchat_KO, pattern = "outgoing")
+```
+
+```{r}
+selectK(cellchat_WT, pattern = "incoming")
+selectK(cellchat_KO, pattern = "incoming")
+```
+
+```{r, fig.height=7}
+nPatterns_WT = 5
+cellchat <- identifyCommunicationPatterns(cellchat_WT, pattern = "incoming", k = nPatterns_WT, width = 7, height = 15)
+```
+
+```{r, fig.height=7}
+nPatterns_KO = 5
+cellchat <- identifyCommunicationPatterns(cellchat_KO, pattern = "incoming", k = nPatterns_KO, width = 7, height = 15)
+```
+
+```{r}
+# river plot
+#netAnalysis_river(cellchat_WT, pattern = "incoming")
+# river plot
+#netAnalysis_river(cellchat_KO, pattern = "incoming")
+```
+
+```{r}
+#netAnalysis_dot(cellchat_WT, pattern = "incoming")
+#netAnalysis_dot(cellchat_KO, pattern = "incoming")
+```
+
+```{r}
+saveRDS(cellchat_WT, file = "Rdsfiles/cellchat_WT.rds")
+saveRDS(cellchat_KO, file = "Rdsfiles/cellchat_KO.rds")
+```
+
+```{r}
+cellchat_WT <- readRDS(file = "Rdsfiles/cellchat_WT.rds")
+cellchat_KO <- readRDS(file = "Rdsfiles/cellchat_KO.rds")
+object.list <- list(WT = cellchat_WT, KO = cellchat_KO)
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))
+cellchat
+```
+
+# Compare the total number of interactions and interaction strength
+```{r}
+gg1 <- compareInteractions(cellchat, show.legend = F, group = c(1,2))
+gg2 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), measure = "weight")
+gg1 + gg2
+```
+
+```{r}
+cellchat <- readRDS(file = "Rdsfiles/cellchat_comparisonAnalysis_Kcnj2_WTvsKO.rds")
+```
+
+# Differential number of interactions or interaction strength among different cell populations
+```{r}
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_diffInteraction(cellchat, weight.scale = T)
+netVisual_diffInteraction(cellchat, weight.scale = T, measure = "weight")
+```
+
+```{r}
+gg1 <- netVisual_heatmap(cellchat)
+#> Do heatmap based on a merged object
+gg2 <- netVisual_heatmap(cellchat, measure = "weight")
+#> Do heatmap based on a merged object
+gg1 + gg2
+```
+
+```{r}
+weight.max <- getMaxWeight(object.list, attribute = c("idents","count"))
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, edge.weight.max = weight.max[2], edge.width.max = 12, title.name = paste0("Number of interactions - ", names(object.list)[i]))
+}
+```
+
+# Compare the major sources and targets in 2D space
+```{r}
+num.link <- sapply(object.list, function(x) {rowSums(x@net$count) + colSums(x@net$count)-diag(x@net$count)})
+weight.MinMax <- c(min(num.link), max(num.link)) # control the dot size in the different datasets
+gg <- list()
+for (i in 1:length(object.list)) {
+  gg[[i]] <- netAnalysis_signalingRole_scatter(object.list[[i]], title = names(object.list)[i], weight.MinMax = weight.MinMax)
+}
+#> Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+#> Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+patchwork::wrap_plots(plots = gg)
+```
+
+```{r, fig.height=15, fig.width=15}
+gg1 <- netAnalysis_signalingChanges_scatter(cellchat, idents.use = "Mes_1")
+gg2 <- netAnalysis_signalingChanges_scatter(cellchat, idents.use = "Mes_2")
+gg3 <- netAnalysis_signalingChanges_scatter(cellchat, idents.use = "Mes_3")
+gg4 <- netAnalysis_signalingChanges_scatter(cellchat, idents.use = "Mes_4")
+gg5 <- netAnalysis_signalingChanges_scatter(cellchat, idents.use = "Ep_1")
+gg6 <- netAnalysis_signalingChanges_scatter(cellchat, idents.use = "Ep_2")
+patchwork::wrap_plots(plots = list(gg1,gg2,gg3,gg4,gg5,gg6))
+```
+
+
+
+# Compare the overall information flow of each signaling pathway
+```{r, fig.height=7}
+gg1 <- rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE)
+gg2 <- rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE)
+gg1 + gg2
+```
+
+# Compare outgoing (or incoming) signaling associated with each cell population
+```{r, fig.height=8}
+library(ComplexHeatmap)
+i = 1
+# combining all the identified signaling pathways from different datasets 
+pathway.union <- union(object.list[[i]]@netP$pathways, object.list[[i+1]]@netP$pathways)
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i], width = 7, height = 15)
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i+1], width = 7, height = 15)
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+```
+
+```{r, fig.height=8}
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i], width = 7, height = 15, color.heatmap = "GnBu")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i+1], width = 7, height = 15, color.heatmap = "GnBu")
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+```
+
+```{r, fig.height=8}
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "all", signaling = pathway.union, title = names(object.list)[i], width = 7, height = 15, color.heatmap = "OrRd")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "all", signaling = pathway.union, title = names(object.list)[i+1], width = 7, height = 15, color.heatmap = "OrRd")
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+```
+
+
+```{r, fig.width=10, fig.height=15}
+gg1 <- netVisual_bubble(cellchat, sources.use = 4, targets.use = c(1:6),  comparison = c(1, 2), max.dataset = 2, title.name = "Increased signaling in KO", angle.x = 45, remove.isolate = T)
+#> Comparing communications on a merged object
+gg2 <- netVisual_bubble(cellchat, sources.use = 4, targets.use = c(1:6),  comparison = c(1, 2), max.dataset = 1, title.name = "Decreased signaling in KO", angle.x = 45, remove.isolate = T)
+#> Comparing communications on a merged object
+gg1 + gg2
+```
+
+# Identify dysfunctional signaling by using differential expression analysis
+```{r}
+# define a positive dataset, i.e., the dataset with positive fold change against the other dataset
+pos.dataset = "KO"
+# define a char name used for storing the results of differential expression analysis
+features.name = pos.dataset
+# perform differential expression analysis
+cellchat <- identifyOverExpressedGenes(cellchat, group.dataset = "datasets", pos.dataset = pos.dataset, features.name = features.name, only.pos = FALSE, thresh.pc = 0.1, thresh.fc = 0.1, thresh.p = 1)
+#> Use the joint cell labels from the merged CellChat object
+# map the results of differential expression analysis onto the inferred cell-cell communications to easily manage/subset the ligand-receptor pairs of interest
+net <- netMappingDEG(cellchat, features.name = features.name)
+# extract the ligand-receptor pairs with upregulated ligands in KO
+net.up <- subsetCommunication(cellchat, net = net, datasets = "KO",ligand.logFC = 0.2, receptor.logFC = NULL)
+# extract the ligand-receptor pairs with upregulated ligands and upregulated recetptors in WT, i.e.,downregulated in KO
+net.down <- subsetCommunication(cellchat, net = net, datasets = "WT",ligand.logFC = -0.1, receptor.logFC = -0.1)
+```
+
+```{r}
+gene.up <- extractGeneSubsetFromPair(net.up, cellchat)
+gene.down <- extractGeneSubsetFromPair(net.down, cellchat)
+```
+
+```{r, fig.width=10, fig.height=10}
+pairLR.use.up = net.up[, "interaction_name", drop = F]
+gg1 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.up, sources.use = 4, targets.use = c(1:3), comparison = c(1, 2),  angle.x = 90, remove.isolate = T,title.name = paste0("Up-regulated signaling in ", names(object.list)[2]))
+#> Comparing communications on a merged object
+pairLR.use.down = net.down[, "interaction_name", drop = F]
+gg2 <- netVisual_bubble(cellchat, pairLR.use = pairLR.use.down, sources.use = 4, targets.use = c(1:3), comparison = c(1, 2),  angle.x = 90, remove.isolate = T,title.name = paste0("Down-regulated signaling in ", names(object.list)[2]))
+#> Comparing communications on a merged object
+gg1 + gg2
+```
+
+```{r}
+# Chord diagram
+#par(mfrow = c(1,2), xpd=TRUE)
+#netVisual_chord_gene(object.list[[2]], sources.use = 4, targets.use = c(1:3), slot.name = 'net', net = net.up, lab.cex = 0.8, small.gap = 3.5, title.name = paste0("Up-regulated signaling in ", names(object.list)[2]))
+#netVisual_chord_gene(object.list[[1]], sources.use = 4, targets.use = c(1:3), slot.name = 'net', net = net.down, lab.cex = 0.8, #small.gap = 3.5, title.name = paste0("Down-regulated signaling in ", names(object.list)[2]))
+```
+
+```{r}
+# visualize the enriched ligands in the first condition
+computeEnrichmentScore(net.down, species = 'mouse')
+```
+
+```{r}
+# visualize the enriched ligands in the second condition
+computeEnrichmentScore(net.up, species = 'mouse')
+```
+
+# Visually compare cell-cell communication using Hierarchy plot, Circle plot or Chord diagram
+```{r, fig.width=8}
+
+pathways.show <- c("BMP") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("BMP", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+
+```
+
+```{r, fig.width=8}
+pathways.show <- c("MPZ") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("MPZ", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("Glutamate") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("Glutamate", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("PERIOSTIN") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("PERIOSTIN", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("CypA") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("CypA", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("IGF") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("IGF", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("PDGF") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("PDGF", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("ADGRA") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("ADGRA", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("EPHB") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("EPHB", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("NCAM") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("NCAM", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("AGRN") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("AGRN", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("NPNT") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("NPNT", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("APP") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("APP", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("CLDN") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("CLDN", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("HSPG") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("HSPG", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("GRN") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("GRN", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("OCLN") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("OCLN", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("NEGR") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("NEGR", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("MK") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("MK", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("ADGRL") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("ADGRL", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r}
+pathways.show <- c("ncWNT") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("ncWNT", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("MIF") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("MIF", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("NRXN") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("NRXN", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("JAM") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("JAM", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("TENASCIN") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("TENASCIN", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("GAP") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("GAP", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("KLK") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("KLK", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("RA") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("RA", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("GDF") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("GDF", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("UNC5") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("UNC5", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("FLRT") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("FLRT", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("PTPR") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("PTPR", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("THBS") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("THBS", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("NOTCH") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("NOTCH", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r, fig.width=8}
+pathways.show <- c("WNT") 
+weight.max <- getMaxWeight(object.list, slot.name = c("netP"), attribute = pathways.show)
+
+par(mfrow = c(1,2), xpd=TRUE)
+
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(
+    object.list[[i]],
+    signaling = pathways.show,
+    layout = "circle",
+    edge.weight.max = weight.max[1],
+    edge.width.max = 10,
+    signaling.name = paste("WNT", names(object.list)[i]),  # Simplified title
+    vertex.label.cex = 1.3  # Increase label size
+  )
+}
+```
+
+```{r}
+pathways.show <- c("THBS") 
+par(mfrow = c(1,2), xpd=TRUE)
+ht <- list()
+for (i in 1:length(object.list)) {
+  ht[[i]] <- netVisual_heatmap(object.list[[i]], signaling = pathways.show, color.heatmap = "Reds",title.name = paste(pathways.show, "signaling ",names(object.list)[i]))
+}
+#> Do heatmap based on a single object 
+#> 
+#> Do heatmap based on a single object
+ComplexHeatmap::draw(ht[[1]] + ht[[2]], ht_gap = unit(0.5, "cm"))
+```
+
+```{r}
+# Chord diagram
+pathways.show <- c("BMP") 
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  netVisual_aggregate(object.list[[i]], signaling = pathways.show, layout = "chord", signaling.name = paste(pathways.show, names(object.list)[i]))
+}
+```
+
+```{r}
+# Chord diagram
+group.cellType <- c(rep("Mes", 4), rep("Ep", 2)) # grouping cell clusters into Mes and Ep cells
+names(group.cellType) <- levels(object.list[[1]]@idents)
+pathways.show <- c("BMP") 
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  netVisual_chord_cell(object.list[[i]], signaling = pathways.show, group = group.cellType, title.name = paste0(pathways.show, " signaling network - ", names(object.list)[i]))
+}
+```
+
+
+```{r, fig.height=10, fig.width=15}
+# show all the significant signaling pathways from Mes4 to Ep cells
+par(mfrow = c(1, 2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  netVisual_chord_gene(object.list[[i]], sources.use = 4, targets.use = c(5:6),slot.name = "netP", title.name = paste0("Signaling pathways sending from Mes4 to Ep - ", names(object.list)[i]), legend.pos.x = 10)
+}
+```
+
+# Compare the signaling gene expression distribution between different datasets
+```{r}
+cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("WT", "KO")) # set factor level
+p <- plotGeneExpression(cellchat, signaling = "HH", split.by = "datasets", colors.ggplot = T, color.use = c("Purple", "Green"))
+p2 <- wrap_plots(p, guides = "collect") & theme(legend.position = "right")
+p2
+```
+
+```{r}
+cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("WT", "KO")) # set factor level
+p <- plotGeneExpression(cellchat, signaling = "VCAM", split.by = "datasets", colors.ggplot = T, color.use = c("Purple", "Green"))
+p2 <- wrap_plots(p, guides = "collect") & theme(legend.position = "right")
+p2
+```
+
+```{r}
+cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("WT", "KO")) # set factor level
+p <- plotGeneExpression(cellchat, signaling = "Netrin", split.by = "datasets", colors.ggplot = T, color.use = c("Purple", "Green"))
+p2 <- wrap_plots(p, guides = "collect") & theme(legend.position = "right")
+p2
+```
+
+```{r}
+cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("WT", "KO")) # set factor level
+p <- plotGeneExpression(cellchat, signaling = "LIFR", split.by = "datasets", colors.ggplot = T, color.use = c("Purple", "Green"))
+p2 <- wrap_plots(p, guides = "collect") & theme(legend.position = "right")
+p2
+```
+
+```{r}
+cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("WT", "KO")) # set factor level
+p <- plotGeneExpression(cellchat, signaling = "TGFb", split.by = "datasets", colors.ggplot = T, color.use = c("Purple", "Green"))
+p2 <- wrap_plots(p, guides = "collect") & theme(legend.position = "right")
+p2
+```
+
+```{r}
+cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("WT", "KO")) # set factor level
+p <- plotGeneExpression(cellchat, signaling = "EGF", split.by = "datasets", colors.ggplot = T, color.use = c("Purple", "Green"))
+p2 <- wrap_plots(p, guides = "collect") & theme(legend.position = "right")
+p2
+```
+
+```{r}
+cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("WT", "KO")) # set factor level
+p <- plotGeneExpression(cellchat, signaling = "ANGPTL", split.by = "datasets", colors.ggplot = T, color.use = c("Purple", "Green"))
+p2 <- wrap_plots(p, guides = "collect") & theme(legend.position = "right")
+p2
+```
+
+# Save the merged CellChat object
+```{r}
+saveRDS(cellchat, file = "Rdsfiles/cellchat_comparisonAnalysis_Kcnj2_WTvsKO.rds")
+```
+
+
+```{r}
+library(sessioninfo)
+session_info()
+```
+
+
+
+
+

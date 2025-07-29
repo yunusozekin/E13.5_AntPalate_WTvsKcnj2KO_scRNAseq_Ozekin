@@ -1,0 +1,421 @@
+---
+title: "int5 Mes subset DoRothEA R Notebook"
+output: 
+  html_notebook:
+    toc: TRUE
+    toc_depth: 3
+    toc_float: TRUE
+---
+
+```{css, echo = F}
+caption {
+      color: blue;
+      font-weight: bold;
+      font-size: 2.0em;
+    }
+```
+
+# libraries
+```{r, warning=F}
+suppressPackageStartupMessages({
+  library(dorothea)
+  library(dplyr)
+  library(Seurat)
+  library(tibble)
+  library(pheatmap)
+  library(tidyr)
+  library(viper)
+  library(ggsci)
+  library(ggplot2)
+})
+```
+
+# Read data
+```{r}
+int5 <- readRDS("RDSfiles/All.integrated.clustered.RDS")
+
+Idents(int5) <- "celltype.ko"
+
+
+#Reorder Idents to keep things pretty
+Idents(int5) <- "Clusters"
+levels(int5) <- c("Mes_1","Mes_2","Mes_3","Mes_4","Prolif_1","Prolif_2","Prolif_3","Ep_1","Ep_2","Imm","Schw","End","RBCs")
+
+DimPlot(int5) + scale_color_igv()
+```
+
+# memSubset out 
+```{r}
+int5 <- subset(int5, idents = c("Mes_1","Mes_2","Mes_3","Mes_4"))
+Idents(int5) <- "KO_type"
+int5 <- subset(int5, idents = c("WT", "KO"))
+Idents(int5) <- "KO_type"
+DimPlot(int5) + scale_color_igv()
+```
+```{r}
+int5$Clusters <- paste(int5$Clusters, int5$KO_type, sep = "_")
+Idents(int5) <- "KO_type"
+p1 <- DimPlot(int5, group.by = "Clusters_KOtype", cells = WhichCells(int5, idents = "KO"), label = T, repel = T) + 
+  scale_color_igv() + NoLegend() + ggtitle("KO")
+p2 <- DimPlot(int5, group.by = "Clusters_KOtype", cells = WhichCells(int5, idents = "WT"), label = T, repel = T) + 
+  scale_color_igv() + NoLegend() + ggtitle("WT")
+p1 + p2
+```
+
+
+# Run DoRothEA
+```{r}
+Idents(int5) <- "Clusters_KOtype"
+
+levels(int5) <- c("Mes_1_KO", "Mes_1_WT", "Mes_2_KO", "Mes_2_WT", "Mes_3_KO", "Mes_3_WT", "Mes_4_KO", "Mes_4_WT", "Mes_5_KO", "Mes_5_WT", "Mes_6_KO", "Mes_6_WT", "Mes_7_KO", "Mes_7_WT", "Mes_8_KO", "Mes_8_WT")
+```
+
+```{r}
+## We read Dorothea Regulons for mouse:
+dorothea_regulon_mouse <- get(data("dorothea_mm", package = "dorothea"))
+
+## Skipping the filtration by confidence level
+#regulon <- dorothea_regulon_mouse %>%
+#    dplyr::filter(confidence %in% c("A","B","C"))
+
+## We compute Viper Scores 
+int5 <- run_viper(int5, dorothea_regulon_mouse, assay_key = "SCT",
+                  options = list(method = "scale", minsize = 4, 
+                                 eset.filter = FALSE, cores = 1, 
+                                 verbose = FALSE))
+```
+
+```{r}
+head(dorothea_regulon_mouse)
+dim(dorothea_regulon_mouse)
+```
+
+```{r}
+## We compute the Nearest Neighbours to perform cluster
+DefaultAssay(object = int5) <- "dorothea"
+int5 <- ScaleData(int5)
+int5 <- RunPCA(int5, features = rownames(int5), verbose = FALSE)
+int5 <- FindNeighbors(int5, dims = 1:30, verbose = FALSE)
+int5 <- FindClusters(int5, resolution = 0.5, verbose = FALSE)
+
+int5 <- RunUMAP(int5, dims = 1:30, umap.method = "uwot", metric = "cosine")
+```
+# UMAP based on DoRothEA TF activity
+```{r, fig.height=7, fig.width=10}
+p1 <- DimPlot(int5) + scale_color_igv()
+p2 <- DimPlot(int5, group.by = "Clusters") + scale_color_igv()
+p3 <- DimPlot(int5, group.by = "dorothea_snn_res.0.5", split.by = "KO_type") + scale_color_igv() + NoLegend()
+(p1 + p2) / p3
+```
+```{r}
+table(int5$dorothea_snn_res.0.5,int5$Clusters_KOtype)
+```
+
+
+```{r}
+saveRDS(int5, file = "RDSfiles/int5.Mes.subset.dorothea.RDS")
+```
+
+```{r}
+int5 <- readRDS(file = "RDSfiles/int5.Mes.subset.dorothea.RDS")
+```
+
+# Top10 differntial TF activities per Seurat cluster
+```{r}
+DefaultAssay(object = int5) <- "dorothea"
+Idents(int5) <- "Clusters_KOtype"
+All.markers <- FindAllMarkers(int5, only.pos = TRUE, min.pct = 0.25, 
+                               logfc.threshold = 0.25, verbose = FALSE)
+top10.markers <- All.markers %>% group_by(cluster) %>% top_n(n=-10, wt = p_val)
+top10.markers
+```
+# Top10 TF activities per DoRothEA cluster
+```{r}
+Idents(int5) <- "dorothea_snn_res.0.5"
+All.markers.do <- FindAllMarkers(int5, only.pos = TRUE, min.pct = 0.25, 
+                               logfc.threshold = 0.25, verbose = FALSE)
+top10.markers.do <- All.markers.do %>% group_by(cluster) %>% top_n(n=-10, wt = p_val)
+top10.markers.do
+```
+
+# TF activity per cell population
+
+```{r}
+## We transform Viper scores, scaled by seurat, into a data frame to better 
+## handling the results
+viper_scores_df <- GetAssayData(int5, slot = "scale.data", 
+                                    assay = "dorothea") %>%
+  data.frame(check.names = F) %>%
+  t()
+
+## We create a data frame containing the cells and their clusters
+CellsClusters <- data.frame(cell = names(Idents(int5)), 
+                            cell_type = as.character(Idents(int5)),
+                            check.names = F)
+
+## We create a data frame with the Viper score per cell and its clusters
+viper_scores_clusters <- viper_scores_df  %>%
+  data.frame() %>% 
+  rownames_to_column("cell") %>%
+  gather(tf, activity, -cell) %>%
+  inner_join(CellsClusters)
+
+## We summarize the Viper scores by cellpopulation
+summarized_viper_scores <- viper_scores_clusters %>% 
+  group_by(tf, cell_type) %>%
+  summarise(avg = mean(activity),
+            std = sd(activity))
+```
+
+```{r}
+head(summarized_viper_scores)
+```
+```{r}
+## We select the 20 most variable TFs. (20*8 populations = 160)
+highly_variable_tfs <- summarized_viper_scores %>%
+  group_by(tf) %>%
+  mutate(var = var(avg))  %>%
+  ungroup() %>%
+  top_n(160, var) %>%
+  distinct(tf)
+
+## We prepare the data for the plot
+summarized_viper_scores_df <- summarized_viper_scores %>%
+  semi_join(highly_variable_tfs, by = "tf") %>%
+  dplyr::select(-std) %>%   
+  spread(tf, avg) %>%
+  data.frame(row.names = 1, check.names = FALSE) 
+```
+
+# Heatmap of DoRothEA 20 most variable TF activities per cluster
+```{r, fig.height=5, fig.width=5}
+palette_length = 100
+my_color = colorRampPalette(c("Darkblue", "white","red"))(palette_length)
+
+my_breaks <- c(seq(min(summarized_viper_scores_df), 0, 
+                   length.out=ceiling(palette_length/2) + 1),
+               seq(max(summarized_viper_scores_df)/palette_length, 
+                   max(summarized_viper_scores_df), 
+                   length.out=floor(palette_length/2)))
+
+viper_hmap <- pheatmap(t(summarized_viper_scores_df),fontsize=14, 
+                       fontsize_row = 10, 
+                       color=my_color, breaks = my_breaks, 
+                       main = "DoRothEA (ABCDEF)", angle_col = 90,
+                       treeheight_col = 0,  border_color = NA) 
+```
+```{r}
+saveRDS(summarized_viper_scores_df, file = "MarkersandPlots/Dor_int5_Mes_summarized_viper_scores_df.RDS")
+```
+
+
+```{r}
+## We select the top5 TF per cluster
+top5.tf <- All.markers.do %>% 
+  group_by(cluster) %>% 
+  top_n(n=5, wt = avg_log2FC) %>%
+  rename(tf = gene) %>%
+  distinct(tf)
+
+
+## We prepare the data for the plot
+summarized_viper_scores_top5_df <- summarized_viper_scores %>%
+  semi_join(top5.tf, by = "tf") %>%
+  dplyr::select(-std) %>%   
+  spread(tf, avg) %>%
+  data.frame(row.names = 1, check.names = FALSE) 
+```
+
+# Heatmap of DoRothEA top5 TF activities per DoRothEA cluster
+```{r, fig.height=5, fig.width=5}
+palette_length = 100
+my_color = colorRampPalette(c("Darkblue", "white","red"))(palette_length)
+
+my_breaks_top5 <- c(seq(min(summarized_viper_scores_top5_df), 0, 
+                   length.out=ceiling(palette_length/2) + 1),
+               seq(max(summarized_viper_scores_top5_df)/palette_length, 
+                   max(summarized_viper_scores_top5_df), 
+                   length.out=floor(palette_length/2)))
+
+viper_hmap_top5 <- pheatmap(t(summarized_viper_scores_top5_df),fontsize=14, 
+                       fontsize_row = 10, 
+                       color=my_color, breaks = my_breaks, 
+                       main = "DoRothEA (ABCDEF)", angle_col = 90,
+                       treeheight_col = 0,  border_color = NA) 
+```
+```{r}
+saveRDS(summarized_viper_scores_top5_df, file = "MarkersandPlots/Dor_int5_Mes_summarized_viper_scores_top5_df.RDS")
+```
+
+```{r}
+## We create a data frame containing the cells and their clusters
+Idents(int5) <- "Clusters_KOtype"
+CellsClusters_seurat <- data.frame(cell = names(Idents(int5)), 
+                            cell_type = as.character(Idents(int5)),
+                            check.names = F)
+
+## We create a data frame with the Viper score per cell and its clusters
+viper_scores_clusters_seurat <- viper_scores_df  %>%
+  data.frame() %>% 
+  rownames_to_column("cell") %>%
+  gather(tf, activity, -cell) %>%
+  inner_join(CellsClusters_seurat)
+
+## We summarize the Viper scores by cellpopulation
+summarized_viper_scores_seurat <- viper_scores_clusters_seurat %>% 
+  group_by(tf, cell_type) %>%
+  summarise(avg = mean(activity),
+            std = sd(activity))
+
+## We select the top5 TF per cluster
+top5.sc.tf <- All.markers %>% 
+  group_by(cluster) %>% 
+  top_n(n=5, wt = avg_log2FC) %>%
+  rename(tf = gene) %>%
+  distinct(tf)
+
+
+## We prepare the data for the plot
+summarized_viper_scores_top5sc_df <- summarized_viper_scores_seurat %>%
+  semi_join(top5.sc.tf, by = "tf") %>%
+  dplyr::select(-std) %>%   
+  spread(tf, avg) %>%
+  data.frame(row.names = 1, check.names = FALSE) 
+```
+
+# Heatmap of DoRothEA top5 TF activities per Seurat cluster by KO_type
+```{r, fig.height=5, fig.width=5}
+palette_length = 100
+my_color = colorRampPalette(c("Darkblue", "white","red"))(palette_length)
+
+my_breaks_top5sc <- c(seq(min(summarized_viper_scores_top5sc_df), 0, 
+                   length.out=ceiling(palette_length/2) + 1),
+               seq(max(summarized_viper_scores_top5sc_df)/palette_length, 
+                   max(summarized_viper_scores_top5sc_df), 
+                   length.out=floor(palette_length/2)))
+
+viper_hmap_top5sc <- pheatmap(t(summarized_viper_scores_top5sc_df),fontsize=14, 
+                       fontsize_row = 10, 
+                       color=my_color, breaks = my_breaks_top5sc, 
+                       main = "DoRothEA (ABCDEF)", angle_col = 90,
+                       treeheight_col = 0,  border_color = NA) 
+```
+```{r}
+saveRDS(summarized_viper_scores_top5sc_df, file = "MarkersandPlots/Dor_int5_Mes_summarized_viper_scores_top5sc_df.RDS")
+```
+
+# Heatmap of DoRothEA top20 TF activities WT vs KO for each seurat cluster
+```{r}
+DefaultAssay(object = int5) <- "dorothea"
+Idents(int5) <- "Clusters_KOtype"
+palette_length = 100
+my_color = colorRampPalette(c("Darkblue", "white","red"))(palette_length)
+
+for(cluster in unique(int5$Clusters)){
+  ident1 <- paste(cluster,"WT",sep = "_")
+  ident2 <- paste(cluster,"KO",sep = "_")
+  markers <- FindMarkers(int5, ident.1 = ident1, ident.2 = ident2, verbose = FALSE)
+  top20 <- head(markers,20) %>%
+    add_rownames(var = "tf") %>%
+    distinct(tf)
+  summarized_viper_scores_cluster <- summarized_viper_scores_seurat %>%
+    filter(cell_type %in% c(ident1, ident2)) %>%
+    semi_join(top20, by = "tf") %>%
+    dplyr::select(-std) %>%   
+    spread(tf, avg) %>%
+    data.frame(row.names = 1, check.names = FALSE) 
+  my_breaks_cluster <- c(seq(min(summarized_viper_scores_cluster), 0, 
+                             length.out=ceiling(palette_length/2) + 1),
+                         seq(max(summarized_viper_scores_cluster)/palette_length, 
+                             max(summarized_viper_scores_cluster), 
+                             length.out=floor(palette_length/2)))
+  
+  viper_hmap_cluster <- pheatmap(t(summarized_viper_scores_cluster),fontsize=14, 
+                                 fontsize_row = 10, 
+                                 color=my_color, breaks = my_breaks_cluster, 
+                                 main = paste("DoRothEA",cluster,"WTvsKO"), angle_col = 90,
+                                 treeheight_col = 0,  border_color = NA)
+  
+  saveRDS(summarized_viper_scores_cluster, 
+          file = paste0("MarkersandPlots/Dor_int5_Mes_summarized_viper_scores_cluster_",cluster,"_WTvsKO.RDS"))
+
+}
+
+```
+
+# Heatmap of DoRothEA top20 TF activities WT vs KO for each DoRothEA cluster
+
+```{r}
+int5$dorothea_KOtype <- paste(int5$dorothea_snn_res.0.5, int5$KO_type, sep = "_")
+Idents(int5) <- "dorothea_KOtype"
+
+CellsClusters_doko <- data.frame(cell = names(Idents(int5)), 
+                            cell_type = as.character(Idents(int5)),
+                            check.names = F)
+
+## We create a data frame with the Viper score per cell and its clusters
+viper_scores_clusters_doko <- viper_scores_df  %>%
+  data.frame() %>% 
+  rownames_to_column("cell") %>%
+  gather(tf, activity, -cell) %>%
+  inner_join(CellsClusters_doko)
+
+## We summarize the Viper scores by cellpopulation
+summarized_viper_scores_doko <- viper_scores_clusters_doko %>% 
+  group_by(tf, cell_type) %>%
+  summarise(avg = mean(activity),
+            std = sd(activity))
+```
+
+```{r}
+DefaultAssay(object = int5) <- "dorothea"
+Idents(int5) <- "dorothea_KOtype"
+palette_length = 100
+my_color = colorRampPalette(c("Darkblue", "white","red"))(palette_length)
+
+for(cluster in unique(int5$dorothea_snn_res.0.5)){
+  Idents(int5) <- "dorothea_KOtype"
+  ident1 <- paste(cluster,"WT",sep = "_")
+  ident2 <- paste(cluster,"KO",sep = "_")
+  markers <- FindMarkers(int5, ident.1 = ident1, ident.2 = ident2, verbose = FALSE)
+  top20 <- head(markers,20) %>%
+    add_rownames(var = "tf") %>%
+    distinct(tf)
+  summarized_viper_scores_cluster <- summarized_viper_scores_doko %>%
+    filter(cell_type %in% c(ident1, ident2)) %>%
+    semi_join(top20, by = "tf") %>%
+    dplyr::select(-std) %>%   
+    spread(tf, avg) %>%
+    data.frame(row.names = 1, check.names = FALSE) 
+  my_breaks_cluster <- c(seq(min(summarized_viper_scores_cluster), 0, 
+                             length.out=ceiling(palette_length/2) + 1),
+                         seq(max(summarized_viper_scores_cluster)/palette_length, 
+                             max(summarized_viper_scores_cluster), 
+                             length.out=floor(palette_length/2)))
+  
+  viper_hmap_cluster <- pheatmap(t(summarized_viper_scores_cluster),fontsize=14, 
+                                 fontsize_row = 10, 
+                                 color=my_color, breaks = my_breaks_cluster, 
+                                 main = paste("DoRothEA dorthoea cluster",cluster,"WTvsKO"), angle_col = 90,
+                                 treeheight_col = 0,  border_color = NA)
+  
+  saveRDS(summarized_viper_scores_cluster, 
+          file = paste0("MarkersandPlots/Dor_int5_Mes_summarized_viper_scores_cluster_Dor",cluster,"_WTvsKO.RDS"))
+  
+}
+```
+
+Note dorothea cluster 7 has no WT cells
+```{r}
+table(int5$dorothea_KOtype)
+```
+
+
+```{r}
+saveRDS(int5, file = "RDSfiles/int5.Mes.subset.dorothea.RDS")
+```
+
+```{r}
+sessionInfo()
+```
+
